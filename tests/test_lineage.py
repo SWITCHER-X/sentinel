@@ -284,7 +284,9 @@ def test_rule_matching():
     print("\n[TEST] Rule Matching")
     
     # Load rules from config
-    with open("/root/.hermes/cache/documents/Sentinel_extracted/Sentinel/config/rules.yaml", "r") as f:
+    import os
+    config_path = os.path.join(os.path.dirname(__file__), "..", "config", "rules.yaml")
+    with open(config_path, "r") as f:
         load_rules_from_yaml(f.read())
     
     # Test reverse shell
@@ -486,7 +488,9 @@ def test_e2e_simulation():
     print("\n[TEST] E2E Attack Chain Simulation")
     
     # Reload rules
-    with open("/root/.hermes/cache/documents/Sentinel_extracted/Sentinel/config/rules.yaml", "r") as f:
+    import os
+    config_path = os.path.join(os.path.dirname(__file__), "..", "config", "rules.yaml")
+    with open(config_path, "r") as f:
         load_rules_from_yaml(f.read())
     
     # Clear state
