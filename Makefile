@@ -51,11 +51,12 @@ verify:
 	$(CLANG) $(BPF_CFLAGS_CORE) -fsyntax-only $(BPF_SRC_CORE)
 	@echo "[✓] Both eBPF syntax OK"
 
-## test — run the Python test suites (lineage, auth, state backend)
+## test — run the Python test suites (lineage, auth, state backend, rules)
 test:
 	python3 tests/test_lineage.py
 	python3 tests/test_auth_db.py
 	python3 tests/test_state_backend.py
+	python3 tests/test_rule_matching.py
 
 ## run-hub — run the collector + dashboard in the foreground
 run-hub:
