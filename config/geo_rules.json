@@ -1,0 +1,13 @@
+{
+  "ALLOW": [
+    "US", "CA", "GB", "DE", "FR", "JP", "AU", "NL", "SE", "NO", "DK", "FI",
+    "CH", "AT", "BE", "IE", "SG", "HK", "NZ", "IL", "KR", "TW"
+  ],
+  "BLOCK": [
+    "CN", "RU", "KP", "IR", "SY", "CU", "VE", "BY", "MM"
+  ],
+  "MONITOR": [
+    "BR", "IN", "VN", "TH", "ID", "MY", "PH", "TR", "UA", "PL", "CZ", "RO"
+  ],
+  "updated": "2026-10-14T00:00:00Z"
+}

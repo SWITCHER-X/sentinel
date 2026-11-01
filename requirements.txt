@@ -1,0 +1,24 @@
+# Sentinel Lineage EDR - Python Dependencies
+# Install: pip install -r requirements.txt
+
+# Core
+# NOTE: bcc (BPF Compiler Collection python bindings) is a DISTRO package,
+# NOT available on PyPI — installed by install.sh via pacman/apt/dnf:
+#   Arch: python-bcc · Debian/Ubuntu: python3-bcc · Fedora: python3-bcc
+psutil>=5.9.0
+pyyaml>=6.0
+requests>=2.31.0
+
+# GeoIP
+geoip2>=4.7.0
+
+# Web framework (collector hub)
+flask>=3.0.0
+flask-cors>=4.0.0
+
+# Production WSGI server (recommended for enterprise deployments)
+gunicorn>=21.2.0
+
+# Optional: for development
+# pytest>=7.4.0
+# black>=23.0.0

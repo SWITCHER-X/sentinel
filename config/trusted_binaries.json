@@ -1,0 +1,15 @@
+{
+  "hashes": [
+    "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456",
+    "fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321"
+  ],
+  "paths": [
+    "/usr/bin/bash",
+    "/usr/bin/python3",
+    "/usr/bin/sshd",
+    "/usr/bin/systemd",
+    "/usr/bin/docker",
+    "/usr/bin/containerd"
+  ],
+  "updated": "2026-10-14T00:00:00Z"
+}

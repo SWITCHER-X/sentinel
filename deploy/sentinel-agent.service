@@ -1,0 +1,28 @@
+[Unit]
+Description=Sentinel Lineage EDR — eBPF Agent (requires kernel access)
+After=network-online.target sentinel-hub.service
+Wants=network-online.target
+BindsTo=sentinel-hub.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/sentinel
+EnvironmentFile=-/etc/sentinel/sentinel.env
+ExecStart=/opt/sentinel/.venv/bin/python agent/sentinel_lineage_agent.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# ─── eBPF needs kernel access: runs as root, minimal hardening ───
+NoNewPrivileges=no
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/sentinel /sys
+AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_SYS_ADMIN
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SENTINEL LINEAGE EDR</title>
+<script src="/d3.v7.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script>
+  (function() {
+    try {
+      var theme = localStorage.getItem('sentinel-theme');
+      if (!theme) {
+        theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      }
+      document.documentElement.setAttribute('data-theme', theme);
+    } catch (e) {}
+  })();
+</script>
+<style>
+:root {
+  --bg: #0b0f14;
+  --bg-elevated: #111820;
+  --bg-sunken: #080c10;
+  --fg: #e8ecf1;
+  --fg-muted: #6b7a8a;
+  --fg-dim: #3d4a5a;
+  --accent: #00d4aa;
+  --accent-dim: #00a888;
+  --crit: #ff3b30;
+  --high: #ff9f0a;
+  --med: #00b4d8;
+  --low: #34c759;
+  --ok: #34c759;
+  --border: #1e2a36;
+  --border-strong: #2d3e4e;
+  --mono-bg: #060a0e;
+  --mono-fg: #8be9fd;
+  --font-ui: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  --fs-base: 11px;
+  --fs-sm: 10px;
+  --fs-lg: 12px;
+  --fs-xl: 13px;
+  --radius: 4px;
+  --transition: 80ms ease-out;
+  --header-h: 32px;
+  --command-bar-h: 28px;
+  --mini-metrics-h: 40px;
+  --sidebar-w: 280px;
+  --graph-w: 380px;
+}
+[data-theme="light"] {
+  --bg: #f0f4f8;
+  --bg-elevated: #ffffff;
+  --bg-sunken: #e4e9ef;
+  --fg: #1a1f2e;
+  --fg-muted: #5a6a7a;
+  --fg-dim: #a0adb8;
+  --accent: #007b6b;
+  --accent-dim: #006658;
+  --crit: #d62828;
+  --high: #c47600;
+  --med: #0077b6;
+  --low: #2d6a4f;
+  --ok: #2d6a4f;
+  --border: #d0d8e0;
+  --border-strong: #a8b4c0;
+  --mono-bg: #f8fafc;
+  --mono-fg: #006d77;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+@media (prefers-contrast: high) {
+  :root {
+    --border: var(--fg);
+    --border-strong: var(--accent);
+    --radius: 2px;
+  }
+  [data-theme="light"] {
+    --border: var(--fg);
+    --border-strong: var(--accent);
+  }
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; }
+body {
+  font-family: var(--font-ui);
+  font-size: var(--fs-base);
+  line-height: 1.4;
+  background: var(--bg);
+  color: var(--fg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+.mono { font-family: var(--font-mono); }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button { font-family: inherit; font-size: inherit; background: none; border: none; cursor: pointer; color: inherit; }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+input, select { font-family: inherit; font-size: inherit; background: var(--bg-sunken); border: 1px solid var(--border); color: var(--fg); border-radius: var(--radius); padding: 4px 8px; }
+input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+input::placeholder { color: var(--fg-dim); }
+select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7a8a' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 8px center; padding-right: 28px; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--bg-sunken); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+::-webkit-scrollbar-corner { background: var(--bg-sunken); }
+.badge { display: inline-flex; align-items: center; font-family: var(--font-mono); font-size: 9px; font-weight: 600; letter-spacing: 0.3px; text-transform: uppercase; padding: 2px 6px; border-radius: 3px; border: 1px solid; }
+.badge-crit { background: rgba(255,59,48,0.15); color: var(--crit); border-color: rgba(255,59,48,0.3); }
+.badge-high { background: rgba(255,159,10,0.15); color: var(--high); border-color: rgba(255,159,10,0.3); }
+.badge-med { background: rgba(0,180,216,0.15); color: var(--med); border-color: rgba(0,180,216,0.3); }
+.badge-low { background: rgba(52,199,89,0.15); color: var(--low); border-color: rgba(52,199,89,0.3); }
+.badge-ok { background: rgba(52,199,89,0.15); color: var(--ok); border-color: rgba(52,199,89,0.3); }
+.badge-dim { background: var(--bg-sunken); color: var(--fg-muted); border-color: var(--border); }
+.tag { font-size: 9px; font-weight: 500; padding: 1px 5px; border-radius: 2px; background: var(--bg-sunken); border: 1px solid var(--border); color: var(--fg-muted); }
+.tag-mitre { color: var(--accent); border-color: rgba(0,212,170,0.3); background: rgba(0,212,170,0.1); }
+.tag-crit { color: var(--crit); border-color: rgba(255,59,48,0.3); background: rgba(255,59,48,0.1); }
+.tag-high { color: var(--high); border-color: rgba(255,159,10,0.3); background: rgba(255,159,10,0.1); }
+.toast-container { position: fixed; bottom: 16px; right: 16px; z-index: 10000; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+.toast { pointer-events: auto; padding: 10px 14px; border-radius: var(--radius); background: var(--bg-elevated); border: 1px solid var(--border); box-shadow: 0 4px 16px rgba(0,0,0,0.3); display: flex; align-items: center; gap: 8px; min-width: 240px; max-width: 360px;  font-size: var(--fs-sm); }
+.toast.info { border-left: 3px solid var(--accent); }
+.toast.success { border-left: 3px solid var(--ok); }
+.toast.warning { border-left: 3px solid var(--high); }
+.toast.error { border-left: 3px solid var(--crit); }
+
+.virtual-list { position: relative; overflow-y: auto; overflow-x: hidden; }
+.virtual-list::-webkit-scrollbar { width: 6px; }
+.virtual-item { position: absolute; left: 0; right: 0; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+
+/* ─── Layout utilities (replaces Tailwind CDN — full offline) ─── */
+.flex { display: flex; } .flex-col { flex-direction: column; } .flex-wrap { flex-wrap: wrap; }
+.flex-1 { flex: 1 1 0%; } .flex-grow { flex-grow: 1; }
+.items-center { align-items: center; } .items-start { align-items: flex-start; }
+.justify-between { justify-content: space-between; } .justify-center { justify-content: center; }
+.gap-1 { gap: 4px; } .gap-1\.5 { gap: 6px; } .gap-2 { gap: 8px; } .gap-3 { gap: 12px; } .gap-4 { gap: 16px; }
+.shrink-0 { flex-shrink: 0; } .min-h-0 { min-height: 0; } .min-w-0 { min-width: 0; }
+.grid { display: grid; }
+.relative { position: relative; } .absolute { position: absolute; } .fixed { position: fixed; }
+.inset-0 { top: 0; right: 0; bottom: 0; left: 0; }
+.inset-y-0 { top: 0; bottom: 0; }
+.right-0 { right: 0; } .left-2 { left: 8px; } .left-3 { left: 12px; }
+.top-1\/2 { top: 50%; } .-translate-y-1\/2 { transform: translateY(-50%); }
+.pt-20 { padding-top: 80px; } .pt-2 { padding-top: 8px; } .pb-1 { padding-bottom: 4px; }
+.p-1 { padding: 4px; } .p-1\.5 { padding: 6px; } .p-2 { padding: 8px; } .p-3 { padding: 12px; }
+.py-0 { padding-top: 0; padding-bottom: 0; } .py-1 { padding-top: 4px; padding-bottom: 4px; }
+.py-1\.5 { padding-top: 6px; padding-bottom: 6px; }
+.px-2 { padding-left: 8px; padding-right: 8px; } .px-3 { padding-left: 12px; padding-right: 12px; }
+.pl-8 { padding-left: 32px; } .pl-10 { padding-left: 40px; } .pr-2 { padding-right: 8px; } .pr-4 { padding-right: 16px; }
+.ml-4 { margin-left: 16px; } .mb-1 { margin-bottom: 4px; } .mb-2 { margin-bottom: 8px; }
+.w-2 { width: 8px; } .w-4 { width: 16px; } .h-2 { height: 8px; } .h-4 { height: 16px; }
+.w-px { width: 1px; } .w-auto { width: auto; } .w-full { width: 100%; } .h-full { height: 100%; }
+.w-\[52px\] { width: 52px; } .w-\[68px\] { width: 68px; } .w-\[92px\] { width: 92px; }
+.w-\[400px\] { width: 400px; } .w-\[600px\] { width: 600px; } .w-\[24px\] { width: 24px; }
+.h-\[24px\] { height: 24px; }
+.w-\[var\(--sidebar-w\)\] { width: var(--sidebar-w); } .w-\[var\(--graph-w\)\] { width: var(--graph-w); }
+.h-\[var\(--header-h\)\] { height: var(--header-h); }
+.h-\[var\(--command-bar-h\)\] { height: var(--command-bar-h); }
+.h-\[var\(--mini-metrics-h\)\] { height: var(--mini-metrics-h); }
+.max-w-\[80px\] { max-width: 80px; } .max-w-\[110px\] { max-width: 110px; }
+.max-w-\[140px\] { max-width: 140px; } .max-w-\[220px\] { max-width: 220px; }
+.max-h-\[500px\] { max-height: 500px; }
+.min-w-\[100px\] { min-width: 100px; } .min-w-\[140px\] { min-width: 140px; }
+.min-w-\[160px\] { min-width: 160px; } .min-w-\[200px\] { min-width: 200px; }
+.text-\[9px\] { font-size: 9px; } .text-\[11px\] { font-size: 11px; }
+.text-\[var\(--fs-sm\)\] { font-size: var(--fs-sm); }
+.text-\[var\(--fs-xl\)\] { font-size: var(--fs-xl); }
+.text-\[var\(--accent\)\] { color: var(--accent); }
+.font-bold { font-weight: 700; } .font-medium { font-weight: 500; }
+.tracking-widest { letter-spacing: 0.1em; }
+.text-right { text-align: right; }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.overflow-hidden { overflow: hidden; } .overflow-y-auto { overflow-y: auto; } .overflow-x-auto { overflow-x: auto; }
+.rounded { border-radius: var(--radius); } .rounded-full { border-radius: 9999px; }
+.border-b { border-bottom: 1px solid var(--border); } .border-t { border-top: 1px solid var(--border); }
+.border-r { border-right: 1px solid var(--border); } .border-l { border-left: 1px solid var(--border); }
+.border-b, .border-t, .border-r, .border-l { border-color: var(--border); }
+.hidden { display: none !important; }
+.pointer-events-none { pointer-events: none; }
+.cursor-pointer { cursor: pointer; }
+.transition-all { transition: all var(--transition); }
+.z-\[999\] { z-index: 999; } .z-\[1000\] { z-index: 1000; } .z-\[1001\] { z-index: 1001; }
+.hover\:bg-\[var\(--bg-sunken\)\]:hover { background: var(--bg-sunken); }
+.hover\:underline:hover { text-decoration: underline; }
+</style>
+</head>
+<body data-theme="dark">
+<div class="toast-container" id="toast-container" aria-live="polite" aria-atomic="true"></div>
+<div id="sse-announce" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+
+<header data-header class="flex items-center justify-between px-3 py-0 h-[var(--header-h)] border-b" style="background: var(--bg-elevated); border-color: var(--border);">
+  <div class="flex items-center gap-3 min-w-0 flex-1">
+    <div class="flex items-center gap-2">
+      <span class="font-bold tracking-widest text-[var(--accent)] mono text-[var(--fs-xl)]">SENTINEL</span>
+      <span id="lineage-badge" class="badge badge-dim mono hidden">LINEAGE: 0x</span>
+    </div>
+    <div class="flex items-center gap-2 ml-4 border-l" style="border-color: var(--border); padding-left: 12px;">
+      <label class="sr-only" for="host-select">Host</label>
+      <select id="host-select" data-host-select class="w-auto min-w-[140px] max-w-[220px]" style="font-size: var(--fs-sm); height: 24px;">
+        <option value="all">All Hosts (3)</option>
+      </select>
+      <label class="sr-only" for="time-range">Time Range</label>
+      <select id="time-range" data-time-range class="w-auto min-w-[100px]" style="font-size: var(--fs-sm); height: 24px;">
+        <option value="live" selected>Live</option>
+        <option value="1h">1 Hour</option>
+        <option value="6h">6 Hours</option>
+        <option value="24h">24 Hours</option>
+      </select>
+    </div>
+  </div>
+  <div class="flex items-center gap-3">
+    <span id="connection-status" data-connection-status class="flex items-center gap-1.5 mono text-[var(--fs-sm)]" style="color: var(--fg-muted);">
+      <span class="w-2 h-2 rounded-full" style="background: var(--fg-dim);"></span>
+      <span>OFFLINE</span>
+    </span>
+    <button id="mode-badge" class="badge badge-ok mono" style="cursor: pointer;" title="Kill-switch state. Click to toggle learn/enforce.">ENFORCING</button>
+    <button id="theme-toggle" data-theme-toggle class="p-1.5 rounded" style="background: var(--bg-sunken); border: 1px solid var(--border);" aria-label="Toggle theme" title="Toggle theme (Ctrl+T)">
+      <svg id="icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="hidden"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+      <svg id="icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+    </button>
+  </div>
+</header>
+
+<div class="flex" style="height: calc(100vh - var(--header-h) - var(--command-bar-h) - var(--mini-metrics-h)); min-height: 0;">
+  <aside data-sidebar id="sidebar" class="w-[var(--sidebar-w)] flex flex-col border-r transition-all var(--transition)" style="background: var(--bg-elevated); border-color: var(--border);">
+    <div class="p-2 border-b" style="border-color: var(--border);">
+      <label class="sr-only" for="sidebar-search">Search lineages</label>
+      <div class="relative">
+        <svg class="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4" style="color: var(--fg-dim);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+        <input type="search" id="sidebar-search" data-sidebar-search placeholder="Search lineages… (Ctrl+K)" class="w-full pl-8 pr-2" style="height: 28px; font-size: var(--fs-sm);">
+      </div>
+    </div>
+    <div class="p-2 border-b" style="border-color: var(--border);">
+      <div class="text-[var(--fs-sm)] font-medium mb-1" style="color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.5px;">Filters</div>
+      <div id="filter-chips" data-filter-chips class="flex flex-wrap gap-1" role="group" aria-label="Quick filters"></div>
+    </div>
+    <div class="flex-1 overflow-hidden flex flex-col min-h-0">
+      <div class="p-2 border-b" style="border-color: var(--border);">
+        <div class="flex items-center justify-between mb-1">
+          <span class="text-[var(--fs-sm)] font-medium" style="color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.5px;">Lineages</span>
+          <span id="lineage-count" class="mono text-[var(--fs-sm)]" style="color: var(--accent);">0</span>
+        </div>
+      </div>
+      <div class="flex-1 min-h-0 virtual-list" id="lineage-list" data-lineage-list role="listbox" aria-label="Lineages" tabindex="0"></div>
+    </div>
+    <div class="p-2 border-t" style="border-color: var(--border);">
+      <div class="text-[var(--fs-sm)] font-medium mb-1" style="color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.5px;">Hosts</div>
+      <div id="host-tree" data-host-tree class="text-[var(--fs-sm)]" style="color: var(--fg-muted);"></div>
+    </div>
+  </aside>
+
+  <main data-main class="flex-1 flex flex-col min-w-0 overflow-hidden">
+    <div class="flex-1 min-h-0 virtual-list" id="timeline-container" data-timeline-container role="list" aria-label="Event timeline" tabindex="0">
+      <div id="timeline-rows" data-timeline-rows style="position: relative;"></div>
+      <div id="timeline-empty" data-timeline-empty class="hidden flex flex-col items-center justify-center h-full" style="color: var(--fg-muted);">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="mb-2" style="opacity: 0.3;"><path d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V19a2 2 0 01-2 2H10a2 2 0 01-2-2v-2"/></svg>
+        <p class="mono" id="empty-message">No events matching filter: ALL</p>
+      </div>
+    </div>
+    <div data-mini-metrics id="mini-metrics" class="h-[var(--mini-metrics-h)] border-t px-2 flex items-center gap-4 overflow-x-auto" style="background: var(--bg-elevated); border-color: var(--border);">
+      <div class="flex-1 min-w-[200px]">
+        <div class="text-[9px] font-medium mb-1" style="color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.5px;">Events/sec</div>
+        <canvas data-sparkline="events" class="w-full h-[24px]"></canvas>
+      </div>
+      <div class="w-px" style="background: var(--border);"></div>
+      <div class="flex-1 min-w-[160px]">
+        <div class="text-[9px] font-medium mb-1" style="color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.5px;">Kills</div>
+        <canvas data-sparkline="kills" class="w-full h-[24px]"></canvas>
+      </div>
+      <div class="w-px" style="background: var(--border);"></div>
+      <div class="flex-1 min-w-[160px]">
+        <div class="text-[9px] font-medium mb-1" style="color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.5px;">Exfil</div>
+        <canvas data-sparkline="exfil" class="w-full h-[24px]"></canvas>
+      </div>
+      <div class="w-px" style="background: var(--border);"></div>
+      <div class="flex-1 min-w-[160px]">
+        <div class="text-[9px] font-medium mb-1" style="color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.5px;">CPU %</div>
+        <canvas data-sparkline="cpu" class="w-full h-[24px]"></canvas>
+      </div>
+      <div class="w-px" style="background: var(--border);"></div>
+      <div class="flex-1 min-w-[160px]">
+        <div class="text-[9px] font-medium mb-1" style="color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.5px;">Mem %</div>
+        <canvas data-sparkline="mem" class="w-full h-[24px]"></canvas>
+      </div>
+      <div class="w-px" style="background: var(--border);"></div>
+      <div class="flex-1 min-w-[160px]">
+        <div class="text-[9px] font-medium mb-1" style="color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.5px;">Net I/O</div>
+        <canvas data-sparkline="net" class="w-full h-[24px]"></canvas>
+      </div>
+    </div>
+  </main>
+
+  <section data-graph id="graph-panel" class="w-[var(--graph-w)] border-l flex flex-col" style="background: var(--bg-elevated); border-color: var(--border);">
+    <div class="p-2 border-b flex flex-col gap-1.5" style="border-color: var(--border);">
+      <div class="flex items-center justify-between">
+        <span class="text-[var(--fs-sm)] font-medium" style="color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.5px;">Lineage Trees</span>
+        <div class="flex items-center gap-1">
+          <button data-graph-center class="p-1 mono text-[9px]" title="Scroll to top (G)" style="color: var(--fg-muted);">Top</button>
+          <button data-graph-zoom-in class="p-1 mono text-[11px]" title="Zoom in (Ctrl+scroll)" style="color: var(--fg-muted);">+</button>
+          <button data-graph-zoom-out class="p-1 mono text-[11px]" title="Zoom out (Ctrl+scroll)" style="color: var(--fg-muted);">−</button>
+        </div>
+      </div>
+      <div class="flex items-center gap-2 flex-wrap" style="font-size: 8px;" aria-hidden="true">
+        <span class="flex items-center gap-1" style="color: var(--fg-muted);"><span style="width:6px;height:6px;border-radius:50%;background:var(--crit);display:inline-block;"></span>CRIT/KILL</span>
+        <span class="flex items-center gap-1" style="color: var(--fg-muted);"><span style="width:6px;height:6px;border-radius:50%;background:var(--high);display:inline-block;"></span>HIGH</span>
+        <span class="flex items-center gap-1" style="color: var(--fg-muted);"><span style="width:6px;height:6px;border-radius:50%;background:var(--med);display:inline-block;"></span>MED</span>
+        <span class="flex items-center gap-1" style="color: var(--fg-muted);"><span style="width:6px;height:6px;border-radius:50%;background:var(--ok);display:inline-block;"></span>TRUSTED</span>
+        <span class="flex items-center gap-1" style="color: var(--fg-muted);"><span style="width:8px;height:2px;background:var(--crit);display:inline-block;"></span>BLOCKED</span>
+      </div>
+    </div>
+    <div class="flex-1 min-h-0 relative" id="graph-container" data-graph-container>
+      <canvas id="graph-canvas" data-graph-canvas class="w-full h-full"></canvas>
+      <div id="graph-empty" data-graph-empty class="absolute inset-0 flex flex-col items-center justify-center" style="color: var(--fg-muted);">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" class="mb-2" style="opacity: 0.3;"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+        <p class="mono">No lineage data — waiting for agent</p>
+      </div>
+      <div id="graph-tooltip" data-graph-tooltip class="hidden absolute pointer-events-none p-2 mono text-[var(--fs-sm)] rounded" style="background: var(--bg-sunken); border: 1px solid var(--border-strong); box-shadow: 0 4px 16px rgba(0,0,0,0.4); max-width: 280px; z-index: 10;"></div>
+    </div>
+  </section>
+</div>
+
+<footer data-command-bar class="h-[var(--command-bar-h)] border-t px-3 flex items-center justify-between" style="background: var(--bg-elevated); border-color: var(--border);">
+  <div class="flex items-center gap-3 flex-1 min-w-0">
+    <button id="palette-trigger" data-palette-trigger class="flex items-center gap-2 px-2 py-1 rounded mono text-[var(--fs-sm)]" style="background: var(--bg-sunken); border: 1px solid var(--border); color: var(--fg-muted);" aria-label="Command Palette (Ctrl+K)">
+      <kbd style="background: var(--bg); border: 1px solid var(--border); border-radius: 2px; padding: 0 4px; font-size: 9px;">Ctrl</kbd>
+      <kbd style="background: var(--bg); border: 1px solid var(--border); border-radius: 2px; padding: 0 4px; font-size: 9px;">K</kbd>
+      <span>Command Palette</span>
+    </button>
+    <span id="status-text" data-status-text class="mono text-[var(--fs-sm)] truncate" style="color: var(--fg-muted);">OFFLINE · 0 hosts · 0 events/min · 0 lineages</span>
+  </div>
+  <div class="flex items-center gap-2">
+    <button id="act-export" data-act-export class="px-2 py-1 mono text-[var(--fs-sm)] rounded" style="background: var(--bg-sunken); border: 1px solid var(--border); color: var(--fg);" title="Export JSON (E)">Export</button>
+    <button id="act-clear" data-act-clear class="px-2 py-1 mono text-[var(--fs-sm)] rounded" style="background: var(--bg-sunken); border: 1px solid var(--border); color: var(--fg);" title="Clear Feed">Clear</button>
+    <button id="act-block-all" data-act-block-all class="px-2 py-1 mono text-[var(--fs-sm)] rounded" style="background: rgba(255,59,48,0.15); border: 1px solid rgba(255,59,48,0.3); color: var(--crit);" title="Block All Threats">Block All</button>
+    <button id="act-refresh" data-act-refresh class="px-2 py-1 mono text-[var(--fs-sm)] rounded" style="background: var(--bg-sunken); border: 1px solid var(--border); color: var(--fg);" title="Refresh (R)">Refresh</button>
+  </div>
+</footer>
+
+<div id="command-palette" data-command-palette class="hidden fixed inset-0 z-[1000] flex items-start justify-center pt-20" role="dialog" aria-modal="true" aria-label="Command Palette">
+  <div class="absolute inset-0" style="background: rgba(0,0,0,0.6);" aria-hidden="true"></div>
+  <div class="relative w-[600px] max-h-[500px] flex flex-col" style="background: var(--bg-elevated); border: 1px solid var(--border-strong); box-shadow: 0 16px 48px rgba(0,0,0,0.5); border-radius: var(--radius); overflow: hidden;">
+    <div class="p-3 border-b" style="border-color: var(--border);">
+      <div class="flex items-center gap-2 mb-2">
+        <kbd style="background: var(--bg-sunken); border: 1px solid var(--border); border-radius: 2px; padding: 0 6px; font-size: 9px;">Ctrl</kbd>
+        <kbd style="background: var(--bg-sunken); border: 1px solid var(--border); border-radius: 2px; padding: 0 6px; font-size: 9px;">K</kbd>
+        <span class="text-[var(--fs-sm)]" style="color: var(--fg-muted);">Command Palette</span>
+      </div>
+      <label class="sr-only" for="palette-input">Search commands</label>
+      <div class="relative">
+        <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4" style="color: var(--fg-dim);" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+        <input type="search" id="palette-input" data-palette-input placeholder="Search lineages, hosts, rules, actions…" class="w-full pl-10 pr-4" style="height: 36px; font-size: var(--fs-base); background: var(--bg-sunken); border: 1px solid var(--border);">
+      </div>
+    </div>
+    <div class="flex-1 overflow-y-auto p-2" id="palette-results" data-palette-results role="listbox" aria-label="Commands"></div>
+    <div class="p-2 border-t text-right" style="border-color: var(--border);">
+      <span class="mono text-[var(--fs-sm)]" style="color: var(--fg-dim);">Esc to close</span>
+    </div>
+  </div>
+</div>
+
+<div id="lineage-detail" data-lineage-detail class="hidden fixed inset-y-0 right-0 z-[999] w-[400px] flex flex-col" style="background: var(--bg-elevated); border-left: 1px solid var(--border-strong); box-shadow: -16px 0 48px rgba(0,0,0,0.4);" role="dialog" aria-label="Lineage Detail">
+  <div class="p-3 border-b flex items-center justify-between" style="border-color: var(--border);">
+    <div class="flex items-center gap-2 min-w-0">
+      <span class="text-[var(--fs-sm)] font-medium truncate">Lineage Detail</span>
+      <span id="detail-lineage-id" class="badge badge-dim mono">0x</span>
+    </div>
+    <button id="detail-close" data-detail-close class="p-1 rounded" style="color: var(--fg-muted); background: var(--bg-sunken); border: 1px solid var(--border);" aria-label="Close detail">×</button>
+  </div>
+  <div class="flex-1 overflow-y-auto p-3" id="detail-content" data-detail-content></div>
+</div>
+
+<script type="module">
+import { SentinelDashboard } from './dashboard.js';
+new SentinelDashboard().mount();
+</script>
+</body>
+</html>
