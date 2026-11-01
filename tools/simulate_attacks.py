@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Inject synthetic threat events into the live Sentinel hub (POST /api/v1/telemetry).
 Simulates an agent reporting attacks across hosts so the dashboard has realistic data."""
-import json, random, time, urllib.request
+import json, random, time, urllib.request, os
 
 random.seed(1337)
 HUB = "http://localhost:5000/api/v1/telemetry"
+AGENT_KEY = os.getenv("SENTINEL_AGENT_KEY", "")
 
 RULES = [
     ("proc-inject", "EXEC_THREAT", "CRITICAL", ["T1055"], True,
@@ -74,6 +75,8 @@ def post(evt):
     req = urllib.request.Request(
         HUB, data=json.dumps(evt).encode(),
         headers={"Content-Type": "application/json"}, method="POST")
+    if AGENT_KEY:
+        req.add_header("X-Sentinel-Key", AGENT_KEY)
     with urllib.request.urlopen(req, timeout=5) as r:
         return r.status
 

@@ -37,6 +37,7 @@ EBPF_SOURCE_LEGACY = os.getenv("SENTINEL_EBPF", os.path.join(_PROJECT_DIR, "ebpf
 # Default to CO-RE (works everywhere with BTF)
 EBPF_SOURCE = EBPF_SOURCE_CORE
 COLLECTOR_URL = os.getenv("SENTINEL_COLLECTOR_URL", "http://127.0.0.1:5000/api/v1/telemetry")
+AGENT_KEY = os.getenv("SENTINEL_AGENT_KEY", "")
 
 # ─── Enforcement mode (learn = observe-only; hub is the source of truth) ───
 ENFORCEMENT_MODE = "enforce"
@@ -49,13 +50,15 @@ def _mode_poller():
     while True:
         try:
             req = urllib.request.Request(f"{base}/api/v1/mode", method="GET")
+            if AGENT_KEY:
+                req.add_header("X-Sentinel-Key", AGENT_KEY)
             with urllib.request.urlopen(req, timeout=5) as r:
                 mode = json.loads(r.read()).get("mode")
                 if mode in ("learn", "enforce") and mode != ENFORCEMENT_MODE:
                     ENFORCEMENT_MODE = mode
                     print(f"[*] enforcement mode → {mode}", flush=True)
-        except Exception:
-            pass  # hub down → keep last known mode
+        except Exception as e:
+            print(f"[-] mode poll failed: {e}")
         time.sleep(30)
 
 threading.Thread(target=_mode_poller, daemon=True).start()
@@ -113,7 +116,10 @@ def _allowlist_poller():
     base = COLLECTOR_URL.rsplit("/api/", 1)[0]
     while True:
         try:
-            with urllib.request.urlopen(f"{base}/api/v1/allowlist", timeout=5) as r:
+            req = urllib.request.Request(f"{base}/api/v1/allowlist", method="GET")
+            if AGENT_KEY:
+                req.add_header("X-Sentinel-Key", AGENT_KEY)
+            with urllib.request.urlopen(req, timeout=5) as r:
                 payload = json.loads(r.read())
             blob = {"entries": payload.get("entries", []),
                     "generated_at": payload.get("generated_at", 0)}
@@ -124,8 +130,8 @@ def _allowlist_poller():
                 _apply_hash_allowlist(hashes)
             else:
                 print("[-] allowlist signature INVALID — keeping previous allowlist", flush=True)
-        except Exception:
-            pass  # hub down → keep last known allowlist
+        except Exception as e:
+            print(f"[-] allowlist poll failed: {e}")
         time.sleep(60)
 
 threading.Thread(target=_allowlist_poller, daemon=True).start()
@@ -312,10 +318,13 @@ def dispatch_telemetry(payload: dict):
     """Send telemetry to collector hub"""
     try:
         data = json.dumps(payload).encode("utf-8")
+        headers = {"Content-Type": "application/json", "User-Agent": "Sentinel-Lineage-Agent"}
+        if AGENT_KEY:
+            headers["X-Sentinel-Key"] = AGENT_KEY
         req = urllib.request.Request(
             COLLECTOR_URL,
             data=data,
-            headers={"Content-Type": "application/json", "User-Agent": "Sentinel-Lineage-Agent"}
+            headers=headers
         )
         with urllib.request.urlopen(req, timeout=2):
             pass

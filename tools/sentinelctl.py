@@ -20,6 +20,18 @@ from typing import Dict, List, Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 VERSION = "2.1.0"
+AGENT_KEY = os.getenv("SENTINEL_AGENT_KEY", "")
+
+def _request(url, method="GET", data=None):
+    """Make HTTP request with agent key header if configured."""
+    req = urllib.request.Request(url, method=method)
+    if data:
+        req.add_header("Content-Type", "application/json")
+        req.data = json.dumps(data).encode() if isinstance(data, dict) else data
+    if AGENT_KEY:
+        req.add_header("X-Sentinel-Key", AGENT_KEY)
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        return json.loads(resp.read())
 
 class Colors:
     RED = '\033[0;31m'
@@ -270,9 +282,7 @@ class SentinelCLI:
     def list_lineages(self, args):
         """List all tracked lineages"""
         try:
-            req = urllib.request.Request('http://localhost:5000/api/v1/lineage')
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                data = json.loads(resp.read())
+            data = _request('http://localhost:5000/api/v1/lineage')
         except Exception as e:
             err(f"Failed to connect to collector: {e}")
             sys.exit(1)
@@ -287,9 +297,7 @@ class SentinelCLI:
         """Block a lineage"""
         url = f'http://localhost:5000/api/v1/lineage/{args.lineage_id}/block'
         try:
-            req = urllib.request.Request(url, method='POST')
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                result = json.loads(resp.read())
+            result = _request(url, method='POST')
             ok(f"Lineage {args.lineage_id} blocked: {result}")
         except Exception as e:
             err(f"Failed to block lineage: {e}")
@@ -299,9 +307,7 @@ class SentinelCLI:
         """Trust a lineage"""
         url = f'http://localhost:5000/api/v1/lineage/{args.lineage_id}/trust'
         try:
-            req = urllib.request.Request(url, method='POST')
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                result = json.loads(resp.read())
+            result = _request(url, method='POST')
             ok(f"Lineage {args.lineage_id} trusted: {result}")
         except Exception as e:
             err(f"Failed to trust lineage: {e}")
@@ -310,9 +316,7 @@ class SentinelCLI:
     def show_lineage(self, args):
         """Show detailed lineage tree"""
         try:
-            req = urllib.request.Request(f'http://localhost:5000/api/v1/lineage/{args.lineage_id}')
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                data = json.loads(resp.read())
+            data = _request(f'http://localhost:5000/api/v1/lineage/{args.lineage_id}')
         except Exception as e:
             err(f"Failed to get lineage: {e}")
             sys.exit(1)
