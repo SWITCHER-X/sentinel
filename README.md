@@ -332,14 +332,11 @@ Test only on machines you own or are authorized to test. `demo/attack.sh` runs r
 
 Project SENTINEL is **alpha** software (v1.0.0), developed and tested on a single-host Arch Linux setup. Treat it as a research and learning platform, and do not rely on it as your only defense. Known gaps in this version:
 
-- **Command-line capture:** the eBPF probe records `argv[0]` only, so rules that match on arguments need full-argv capture to fire as designed.
-- **Rule scoping:** network, file-integrity and lineage-type rules are not yet restricted to their own event types in the exec path. Validate rule sets in Learn mode first.
-- **Agent enrollment:** the agent does not yet attach the `X-Sentinel-Key` header to its hub requests, so with installer-generated keys the hub rejects its telemetry and polls.
-- **Lineage propagation:** blocking covers direct children of a blocked lineage. Deeper descendants, and blocks made from the dashboard, are not yet pushed to the kernel map.
-- **Kernel trust map:** the in-kernel allowlist and `task_kill` self-protection depend on a key format that the agent's allowlist sync does not yet produce.
-- **Network detectors:** geo-blocking, DNS-rate, ICMP and data-volume checks are partially implemented.
+- **Loader:** the agent compiles eBPF through BCC at start-up; the CO-RE object produced by `make build-core` is not loaded by the agent yet.
+- **Kernel trust map:** in-kernel allowlisting and `task_kill` self-protection are not active yet — the kernel keys on a hash of the path string while the agent inserts the first 8 bytes of the file's SHA-256, so the two never match.
+- **Dashboard blocks:** the hub records block/trust intent and the agent command feed exists (`GET /api/v1/agent/commands`), but the agent does not yet poll it, so UI blocks are not applied in the kernel.
+- **Network detectors:** geo-blocking, DNS-rate, ICMP and data-volume checks are partial (`data_volume` counts `sendmsg` calls, not bytes; nothing emits `icmp_events`).
 - **Hub scale:** state is held behind a pluggable backend (`collector/state.py`). In-memory is the default and is still single-process — run one gunicorn worker. Set `SENTINEL_REDIS_URL` to move state into Redis and scale workers. A 10,000-event buffer and per-event persistence still bound throughput.
-- **Loader:** the agent compiles eBPF source through BCC at start-up. `make build` produces a CO-RE object that the agent does not consume yet.
 
 ---
 

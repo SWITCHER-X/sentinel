@@ -271,4 +271,5 @@ Sentinel/
 
 ## License
 
-MIT — Use freely for defense, research, and education.
+All rights reserved. © 2026 Ayuba Charles Medugu. The source is published for
+review and evaluation only — see [LICENSE](../LICENSE).
