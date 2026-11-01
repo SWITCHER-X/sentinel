@@ -16,12 +16,12 @@ RUN apk add --no-cache \
 WORKDIR /build
 
 # Copy eBPF source
-COPY ebpf/sentinel_lineage.bpf.c .
+COPY ebpf/sentinel_lineage_core.bpf.c ebpf/vmlinux.h ./
 
 # Compile eBPF program
 RUN mkdir -p /build/out && \
-    clang -target bpf -D__TARGET_ARCH_x86 -I/usr/include -I/usr/include/bpf \
-    -Wall -Werror -O2 -g -c sentinel_lineage.bpf.c -o /build/out/sentinel_lineage.o
+    clang -target bpf -D__TARGET_ARCH_x86 -I. -I/usr/include/bpf \
+    -Wall -O2 -g -c sentinel_lineage_core.bpf.c -o /build/out/sentinel_lineage_core.o
 
 # ─── Runtime Stage ───
 FROM python:3.12-slim-bookworm
@@ -58,7 +58,7 @@ RUN useradd -m -s /bin/bash sentinel
 WORKDIR /opt/sentinel
 
 # Copy project files
-COPY --from=builder /build/out/sentinel_lineage.o ./ebpf/
+COPY --from=builder /build/out/sentinel_lineage_core.o ./ebpf/
 COPY agent/ ./agent/
 COPY collector/ ./collector/
 COPY config/ ./config/
@@ -71,7 +71,7 @@ RUN mkdir -p /var/lib/sentinel /var/log/sentinel && \
     chown -R sentinel:sentinel /opt/sentinel /var/lib/sentinel /var/log/sentinel
 
 # Copy eBPF source for runtime compilation (BCC compiles at runtime)
-COPY ebpf/sentinel_lineage.bpf.c ./ebpf/
+COPY ebpf/sentinel_lineage_core.bpf.c ebpf/vmlinux.h .//ebpf/
 
 # Environment variables
 ENV SENTINEL_CONFIG=/opt/sentinel/config/rules.yaml \

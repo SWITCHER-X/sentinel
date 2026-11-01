@@ -290,16 +290,26 @@ def load_rules():
                 uid_min=r.get("uid_min", 0),
                 uid_max=r.get("uid_max", 0),
             )
+            # A rule that defines a pattern or binary_pattern must actually test it.
+            # Network / file-integrity rules are scoped to their own event types.
+            if not (rule.flags & (RF_NETWORK | RF_FILE_WRITE)):
+                if rule.binary_pattern:
+                    rule.flags |= RF_BINARY
+                if rule.pattern:
+                    rule.flags |= RF_CMDLINE
+                if rule.flags & (RF_BINARY | RF_CMDLINE):
+                    rule.flags |= RF_REGEX
             if rule.pattern and (rule.flags & RF_REGEX):
                 try:
                     rule.compiled_pattern = re.compile(rule.pattern, re.IGNORECASE)
-                except Exception:
+                except re.error:
                     rule.compiled_pattern = None
-            # Always compile binary_pattern when RF_BINARY flag is set (Medium #11)
             if rule.binary_pattern and (rule.flags & RF_BINARY):
                 try:
-                    rule.compiled_binary = re.compile(rule.binary_pattern, re.IGNORECASE)
-                except Exception:
+                    # match at the start of the executable NAME, not anywhere in the path
+                    rule.compiled_binary = re.compile(
+                        r"(?:" + rule.binary_pattern + r")(?![A-Za-z0-9])", re.IGNORECASE)
+                except re.error:
                     rule.compiled_binary = None
             rules.append(rule)
         print(f"[*] Loaded {len(rules)} detection rules")
@@ -355,11 +365,11 @@ def match_rule(entry: LineageEntry, rule: Rule) -> bool:
     if rule.flags & RF_BINARY:
         if not rule.binary_pattern:
             return False  # Flag set but no pattern = no match
-        target = entry.binary_path
+        target = os.path.basename(entry.binary_path)
         if rule.compiled_binary:
-            if not rule.compiled_binary.search(target):
+            if not rule.compiled_binary.match(target):
                 return False
-        elif rule.binary_pattern.lower() not in target.lower():
+        elif rule.binary_pattern.lower() != target.lower():
             return False
 
     # Cmdline pattern match
@@ -472,8 +482,10 @@ def handle_exec_event(cpu, data, size):
                 alert["tags"] = list(set((alert.get("tags") or []) + ["learn-mode"]))
                 entry.alerts[-1]["action"] = "LOG"
                 print(f"[-] LEARN MODE (no enforcement): {rule.name} -> PID {pid}")
-            elif entry.flags & LF_TRUSTED:
-                # Trusted binary/process — never enforce, only log
+            elif (entry.flags & LF_TRUSTED) and not (rule.flags & RF_CMDLINE):
+                # Trusted binary: exempt from identity (binary-name) rules only.
+                # Command-line behaviour rules still enforce, because attackers
+                # abuse trusted tools (bash, python, curl).
                 alert["action"] = "LOG"
                 alert["tags"] = list(set((alert.get("tags") or []) + ["trusted-binary"]))
                 entry.alerts[-1]["action"] = "LOG"

@@ -22,3 +22,11 @@ sentinel_alerts.json
 
 # OS
 .DS_Store
+
+# SQLite runtime files
+*.db
+*.db-shm
+*.db-wal
+
+# Internal review notes (not for public repo)
+LOGIC_REVIEW.md

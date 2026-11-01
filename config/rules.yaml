@@ -125,7 +125,7 @@ rules:
 
   - id: 2006
     name: "Node.js One-Liner Download Execute"
-    binary_pattern: "node"
+    binary_pattern: "(node|nodejs)"
     pattern: "(require\\(.*http|fetch|axios).*eval|Function\\(.*\\)"
     action: "KILL"
     severity: "CRITICAL"
@@ -402,7 +402,7 @@ rules:
 
   - id: 7002
     name: "Pass-the-Hash/Ticket Tools"
-    binary_pattern: "(psexec|wmiexec|smbexec|atexec|dcomexec|pth-|winexe|crackmapexec|impacket)"
+    binary_pattern: "(psexec|wmiexec|smbexec|atexec|dcomexec|pth|winexe|crackmapexec|impacket)"
     pattern: ""
     action: "KILL"
     severity: "CRITICAL"
@@ -448,7 +448,7 @@ rules:
   # ════════════════════════════════════════════════════════════════
   - id: 9001
     name: "C2 - Known Malware Binaries"
-    binary_pattern: "(cobaltstrike|beacon|metasploit|meterpreter|sliver|havoc|bruteratel|poshc2|empire|koadic|pupy|merlin|trevorc2|dnscat2|iodine|sg|chisel|ligolo|nps|frp|ngrok|cloudflared)"
+    binary_pattern: "(cobaltstrike|beacon|metasploit|meterpreter|sliver|havoc|bruteratel|poshc2|empire|koadic|pupy|merlin|trevorc2|dnscat2|iodine|chisel|ligolo|nps|frp|ngrok|cloudflared)"
     pattern: ""
     action: "KILL"
     severity: "CRITICAL"

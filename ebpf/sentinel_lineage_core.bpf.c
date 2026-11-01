@@ -11,7 +11,10 @@
 
 #define MAX_LINEAGE_ENTRIES 65536
 #define MAX_PATH_LEN 256
-#define LINEAGE_ID_SEED 0x9e3779b97f4a7c15
+#define CMDLINE_LEN 512
+#define MAX_ARGS 12
+#define ARG_CHUNK 96
+#define LINEAGE_ID_SEED 0x9e3779b97f4a7c15ULL
 
 // Missing constants from kernel headers
 #ifndef EPERM
@@ -78,6 +81,7 @@ struct proc_event_t {
     u32 pid;
     u32 ppid;
     u32 uid;
+    u32 ns_pid;
     u64 lineage_id;
     u64 parent_lineage_id;
     char comm[16];
@@ -215,6 +219,30 @@ enum rule_flags {
     RULE_FLAG_FILE_WRITE  = 1 << 6,
 };
 
+// ─── Per-CPU scratch space ───
+// The BPF stack is limited to 512 bytes. The event structs below are larger,
+// so every program builds them here instead of on the stack.
+struct scratch_t {
+    struct lineage_entry_t entry;
+    struct proc_event_t    pe;
+    struct alert_event_t   alert;
+    struct file_event_t    fe;
+    struct conn_event_t    ce;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, struct scratch_t);
+} scratch SEC(".maps");
+
+
+static __always_inline struct scratch_t *get_scratch(void) {
+    u32 zero = 0;
+    return bpf_map_lookup_elem(&scratch, &zero);
+}
+
 // Hash function for lineage_id generation
 static __always_inline u64 lineage_hash(u64 parent_id, const char *path, u32 uid, u64 ts) {
     u64 h = parent_id ^ LINEAGE_ID_SEED;
@@ -230,7 +258,7 @@ static __always_inline u64 lineage_hash(u64 parent_id, const char *path, u32 uid
     return h;
 }
 
-// Check if binary is in trusted list
+// Check if binary is in trusted list (keyed on a hash of the path string)
 static __always_inline int is_trusted_binary(const char *path) {
     u64 key = 0;
     #pragma unroll
@@ -242,19 +270,154 @@ static __always_inline int is_trusted_binary(const char *path) {
     return bpf_map_lookup_elem(&trusted_binaries, &key) != NULL;
 }
 
-// Check if lineage is blocked
 static __always_inline int is_lineage_blocked(u64 lineage_id) {
-    return bpf_map_lookup_elem(&blocked_lineages, &lineage_id) != NULL;
+    return lineage_id != 0 && bpf_map_lookup_elem(&blocked_lineages, &lineage_id) != NULL;
 }
 
-// Get current namespace PID (CO-RE compatible)
 static __always_inline u32 get_ns_pid(struct task_struct *task) {
     struct pid_namespace *ns = BPF_CORE_READ(task, nsproxy, pid_ns_for_children);
     if (!ns) return 0;
     return BPF_CORE_READ(task, tgid);
 }
 
-// LSM hook: task_kill - intercept kill signals to protect Sentinel processes
+// Join argv[0..MAX_ARGS) with spaces into out (NUL-terminated, CMDLINE_LEN bytes).
+static __always_inline void read_argv(char *out, const char *const *argv) {
+    u32 off = 0;
+    out[0] = 0;
+    #pragma unroll
+    for (int i = 0; i < MAX_ARGS; i++) {
+        const char *arg = NULL;
+        if (bpf_probe_read_user(&arg, sizeof(arg), &argv[i]) != 0 || !arg)
+            break;
+        if (off > CMDLINE_LEN - ARG_CHUNK)
+            break;
+        long n = bpf_probe_read_user_str(&out[off], ARG_CHUNK, arg);
+        if (n <= 1)
+            break;
+        off += (u32)n;                       // n counts the trailing NUL
+        if (off > 0 && off <= CMDLINE_LEN)
+            out[(off - 1) & (CMDLINE_LEN - 1)] = ' ';
+    }
+    if (off > 0 && off <= CMDLINE_LEN)
+        out[(off - 1) & (CMDLINE_LEN - 1)] = 0;   // drop trailing space
+}
+
+static __always_inline void emit_blocked_alert(struct scratch_t *s, u64 lineage_id, u32 pid,
+                                                u32 ns_pid, u64 ts, const char *tag, u32 tag_len) {
+    struct alert_event_t *a = &s->alert;
+    a->lineage_id = lineage_id;
+    a->pid = pid;
+    a->ns_pid = ns_pid;
+    a->rule_id = 0xFFFFFFFF;
+    a->action = ACTION_KILL;
+    bpf_get_current_comm(&a->comm, sizeof(a->comm));
+    bpf_probe_read_kernel_str(a->binary_path, MAX_PATH_LEN, s->entry.binary_path);
+    __builtin_memcpy(a->matched_pattern, tag, 24);
+    a->timestamp = ts;
+    bpf_ringbuf_output(&alert_events, a, sizeof(*a), 0);
+}
+
+// Shared by execve and execveat: create the lineage entry, enforce blocks, emit the event.
+static __always_inline int handle_exec(const char *filename, const char *const *argv, int fd_exec) {
+    struct scratch_t *s = get_scratch();
+    if (!s) return 0;
+
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    u32 pid = pid_tgid >> 32;
+    u64 uid_gid = bpf_get_current_uid_gid();
+    u32 uid = (u32)uid_gid;
+    u32 gid = uid_gid >> 32;
+
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    u32 ppid = BPF_CORE_READ(task, real_parent, tgid);
+    u32 ns_pid = get_ns_pid(task);
+
+    struct lineage_entry_t *parent_ptr = bpf_map_lookup_elem(&lineage_map, &ppid);
+    u64 parent_lineage_id = parent_ptr ? parent_ptr->lineage_id : 0;
+
+    struct lineage_entry_t *e = &s->entry;
+    long plen = bpf_probe_read_user_str(e->binary_path, MAX_PATH_LEN, filename);
+    if (fd_exec && plen <= 1)
+        __builtin_memcpy(e->binary_path, "<fd-exec>", 10);   // fexecve / memfd: no path available
+    read_argv(e->cmdline, argv);
+
+    u64 ts = bpf_ktime_get_ns();
+    u64 lineage_id = lineage_hash(parent_lineage_id, e->binary_path, uid, ts);
+
+    // Children of a blocked lineage die at exec. The child's own ID is blocked too,
+    // so the block follows the whole descendant chain, not just one generation.
+    if (is_lineage_blocked(parent_lineage_id)) {
+        u8 one = 1;
+        bpf_map_update_elem(&blocked_lineages, &lineage_id, &one, BPF_ANY);
+        bpf_send_signal(SIGKILL);
+        emit_blocked_alert(s, lineage_id, pid, ns_pid, ts, "BLOCKED_LINEAGE", 16);
+        return 0;
+    }
+
+    u32 flags = 0;
+    if (uid == 0) flags |= LINEAGE_FLAG_ROOT;
+    if (is_trusted_binary(e->binary_path)) flags |= LINEAGE_FLAG_TRUSTED;
+    if (parent_lineage_id == 0) flags |= LINEAGE_FLAG_ANONYMOUS;
+    if (fd_exec && plen <= 1) flags |= LINEAGE_FLAG_SUSPICIOUS;
+
+    e->lineage_id = lineage_id;
+    e->parent_lineage_id = parent_lineage_id;
+    e->pid = pid;
+    e->ppid = ppid;
+    e->uid = uid;
+    e->gid = gid;
+    e->ns_pid = ns_pid;
+    e->exec_timestamp = ts;
+    e->flags = flags;
+    e->rule_matched = 0;
+    bpf_get_current_comm(&e->comm, sizeof(e->comm));
+
+    bpf_map_update_elem(&lineage_map, &pid, e, BPF_ANY);
+    bpf_map_update_elem(&lineage_by_id, &lineage_id, e, BPF_ANY);
+
+    struct proc_event_t *pe = &s->pe;
+    pe->pid = pid;
+    pe->ppid = ppid;
+    pe->uid = uid;
+    pe->ns_pid = ns_pid;
+    pe->lineage_id = lineage_id;
+    pe->parent_lineage_id = parent_lineage_id;
+    bpf_get_current_comm(&pe->comm, sizeof(pe->comm));
+    bpf_probe_read_kernel_str(pe->filename, MAX_PATH_LEN, e->binary_path);
+    bpf_probe_read_kernel_str(pe->cmdline, CMDLINE_LEN, e->cmdline);
+    bpf_ringbuf_output(&exec_events, pe, sizeof(*pe), 0);
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_execve")
+int trace_execve(struct trace_event_raw_sys_enter *ctx) {
+    return handle_exec((const char *)ctx->args[0], (const char *const *)ctx->args[1], 0);
+}
+
+SEC("tracepoint/syscalls/sys_enter_execveat")
+int trace_execveat(struct trace_event_raw_sys_enter *ctx) {
+    int dfd = (int)ctx->args[0];
+    return handle_exec((const char *)ctx->args[1], (const char *const *)ctx->args[2],
+                       dfd != AT_FDCWD);
+}
+
+// LSM: bprm_check_security — defense in depth, deny exec under a blocked lineage.
+SEC("lsm/bprm_check_security")
+int BPF_PROG(bprm_check_security_lsm, struct linux_binprm *bprm) {
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    u32 ppid = BPF_CORE_READ(task, real_parent, tgid);
+    struct lineage_entry_t *parent = bpf_map_lookup_elem(&lineage_map, &ppid);
+    if (!parent || !is_lineage_blocked(parent->lineage_id))
+        return 0;
+
+    struct scratch_t *s = get_scratch();
+    if (!s) return -EPERM;
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
+    bpf_probe_read_kernel_str(s->entry.binary_path, MAX_PATH_LEN, BPF_CORE_READ(bprm, filename));
+    emit_blocked_alert(s, parent->lineage_id, pid, pid, bpf_ktime_get_ns(), "BLOCKED_LINEAGE_LSM", 20);
+    return -EPERM;
+}
+
 SEC("lsm/task_kill")
 int BPF_PROG(task_kill_lsm, struct task_struct *p, struct kernel_siginfo *info, int sig, const struct cred *cred) {
     u32 pid = BPF_CORE_READ(p, tgid);
@@ -264,134 +427,36 @@ int BPF_PROG(task_kill_lsm, struct task_struct *p, struct kernel_siginfo *info, 
     if (entry->flags & LINEAGE_FLAG_TRUSTED) {
         u32 sender_pid = bpf_get_current_pid_tgid() >> 32;
         struct lineage_entry_t *sender = bpf_map_lookup_elem(&lineage_map, &sender_pid);
-        if (!sender || !(sender->flags & LINEAGE_FLAG_TRUSTED)) {
+        if (!sender || !(sender->flags & LINEAGE_FLAG_TRUSTED))
             return -EPERM;
-        }
     }
     return 0;
 }
 
-// LSM hook: file_open - monitor sensitive file access
+static __always_inline void fill_file_path(char *dst, struct file *file) {
+    const unsigned char *name = BPF_CORE_READ(file, f_path.dentry, d_name.name);
+    bpf_probe_read_kernel_str(dst, MAX_PATH_LEN, name);
+}
+
 SEC("lsm/file_open")
 int BPF_PROG(file_open_lsm, struct file *file) {
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 pid = pid_tgid >> 32;
-
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
     struct lineage_entry_t *entry = bpf_map_lookup_elem(&lineage_map, &pid);
     if (!entry) return 0;
+    struct scratch_t *s = get_scratch();
+    if (!s) return 0;
 
-    struct file_event_t event = {};
-    event.pid = pid;
-    event.ns_pid = entry->ns_pid;
-    bpf_get_current_comm(&event.comm, sizeof(event.comm));
-    event.lineage_id = entry->lineage_id;
-    event.flags = BPF_CORE_READ(file, f_flags);
-
-    // Read path from file->f_path (struct path, not pointer)
-    struct path path = {};
-    bpf_core_read(&path, sizeof(path), &file->f_path);
-    struct dentry *dentry = BPF_CORE_READ(&path, dentry);
-    bpf_core_read_user_str(&event.path, MAX_PATH_LEN, dentry->d_name.name);
-
-    bpf_ringbuf_output(&file_events, &event, sizeof(event), 0);
+    struct file_event_t *f = &s->fe;
+    f->pid = pid;
+    f->ns_pid = entry->ns_pid;
+    f->lineage_id = entry->lineage_id;
+    f->flags = BPF_CORE_READ(file, f_flags);
+    bpf_get_current_comm(&f->comm, sizeof(f->comm));
+    fill_file_path(f->path, file);
+    bpf_ringbuf_output(&file_events, f, sizeof(*f), 0);
     return 0;
 }
 
-// Tracepoint: sys_enter_execve - main lineage creation point
-SEC("tracepoint/syscalls/sys_enter_execve")
-int trace_execve(struct trace_event_raw_sys_enter *ctx) {
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 pid = pid_tgid >> 32;
-    u32 uid = bpf_get_current_uid_gid();
-    u32 gid = bpf_get_current_uid_gid() >> 32;
-
-    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-    u32 ppid = BPF_CORE_READ(task, real_parent, tgid);
-    u32 ns_pid = get_ns_pid(task);
-
-    struct lineage_entry_t *parent_ptr = bpf_map_lookup_elem(&lineage_map, &ppid);
-    u64 parent_lineage_id = 0;
-    if (parent_ptr) {
-        parent_lineage_id = parent_ptr->lineage_id;
-    }
-
-    // Read binary path from tracepoint args
-    const char *filename = (const char *)ctx->args[0];
-    char binary_path[MAX_PATH_LEN] = {};
-    bpf_probe_read_user_str(&binary_path, MAX_PATH_LEN, filename);
-
-    // Read argv for cmdline
-    const char *const *argv = (const char *const *)ctx->args[1];
-    const char *arg0;
-    char cmdline[512] = {};
-    if (bpf_probe_read_user(&arg0, sizeof(arg0), argv) == 0 && arg0) {
-        bpf_probe_read_user_str(&cmdline, 512, arg0);
-    }
-
-    // Generate lineage ID
-    u64 timestamp = bpf_ktime_get_ns();
-    u64 lineage_id = lineage_hash(parent_lineage_id, binary_path, uid, timestamp);
-
-    // Check if this lineage is blocked
-    if (is_lineage_blocked(lineage_id) || (parent_ptr && is_lineage_blocked(parent_lineage_id))) {
-        bpf_send_signal(SIGKILL);
-
-        struct alert_event_t alert = {};
-        alert.lineage_id = lineage_id;
-        alert.pid = pid;
-        alert.ns_pid = ns_pid;
-        alert.rule_id = 0xFFFFFFFF;
-        alert.action = ACTION_KILL;
-        bpf_get_current_comm(&alert.comm, sizeof(alert.comm));
-        bpf_probe_read_user_str(&alert.binary_path, MAX_PATH_LEN, filename);
-        __builtin_memcpy(&alert.matched_pattern, "BLOCKED_LINEAGE", 16);
-        alert.timestamp = timestamp;
-        bpf_ringbuf_output(&alert_events, &alert, sizeof(alert), 0);
-
-        return 0;
-    }
-
-    // Check trusted binary list
-    u32 flags = 0;
-    if (uid == 0) flags |= LINEAGE_FLAG_ROOT;
-    if (is_trusted_binary(binary_path)) flags |= LINEAGE_FLAG_TRUSTED;
-    if (parent_lineage_id == 0) flags |= LINEAGE_FLAG_ANONYMOUS;
-
-    // Create lineage entry
-    struct lineage_entry_t entry = {};
-    entry.lineage_id = lineage_id;
-    entry.parent_lineage_id = parent_lineage_id;
-    entry.pid = pid;
-    entry.ppid = ppid;
-    entry.uid = uid;
-    entry.gid = gid;
-    entry.ns_pid = ns_pid;
-    entry.exec_timestamp = timestamp;
-    entry.flags = flags;
-    bpf_get_current_comm(&entry.comm, sizeof(entry.comm));
-    bpf_probe_read_user_str(&entry.binary_path, MAX_PATH_LEN, filename);
-    bpf_probe_read_user_str(&entry.cmdline, 512, arg0);
-
-    bpf_map_update_elem(&lineage_map, &pid, &entry, BPF_ANY);
-    bpf_map_update_elem(&lineage_by_id, &lineage_id, &entry, BPF_ANY);
-
-    // Emit exec event
-    struct proc_event_t proc_event = {};
-    proc_event.pid = pid;
-    proc_event.ppid = ppid;
-    proc_event.uid = uid;
-    proc_event.lineage_id = lineage_id;
-    proc_event.parent_lineage_id = parent_lineage_id;
-    bpf_get_current_comm(&proc_event.comm, sizeof(proc_event.comm));
-    bpf_probe_read_user_str(&proc_event.filename, MAX_PATH_LEN, filename);
-    bpf_probe_read_user_str(&proc_event.cmdline, 512, arg0);
-
-    bpf_ringbuf_output(&exec_events, &proc_event, sizeof(proc_event), 0);
-
-    return 0;
-}
-
-// Tracepoint: sys_enter_connect - network with lineage
 SEC("tracepoint/syscalls/sys_enter_connect")
 int trace_connect(struct trace_event_raw_sys_enter *ctx) {
     const struct sockaddr *uservaddr = (const struct sockaddr *)ctx->args[1];
@@ -399,310 +464,124 @@ int trace_connect(struct trace_event_raw_sys_enter *ctx) {
     bpf_probe_read_user(&family, sizeof(family), &uservaddr->sa_family);
     if (family != AF_INET) return 0;
 
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 pid = pid_tgid >> 32;
-
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
     struct lineage_entry_t *entry = bpf_map_lookup_elem(&lineage_map, &pid);
     if (!entry) return 0;
+    struct scratch_t *s = get_scratch();
+    if (!s) return 0;
 
     const struct sockaddr_in *addr = (const struct sockaddr_in *)uservaddr;
-    struct conn_event_t event = {};
-    event.pid = pid;
-    event.ns_pid = entry->ns_pid;
-    event.lineage_id = entry->lineage_id;
-    bpf_get_current_comm(&event.comm, sizeof(event.comm));
-    bpf_probe_read_user(&event.daddr, sizeof(event.daddr), &addr->sin_addr.s_addr);
-    bpf_probe_read_user(&event.dport, sizeof(event.dport), &addr->sin_port);
-    event.family = family;
-
-    bpf_ringbuf_output(&conn_events, &event, sizeof(event), 0);
+    struct conn_event_t *c = &s->ce;
+    c->pid = pid;
+    c->ns_pid = entry->ns_pid;
+    c->lineage_id = entry->lineage_id;
+    bpf_get_current_comm(&c->comm, sizeof(c->comm));
+    bpf_probe_read_user(&c->daddr, sizeof(c->daddr), &addr->sin_addr.s_addr);
+    bpf_probe_read_user(&c->dport, sizeof(c->dport), &addr->sin_port);
+    c->family = family;
+    bpf_ringbuf_output(&conn_events, c, sizeof(*c), 0);
     return 0;
 }
 
-// Tracepoint: sys_enter_openat - file access with lineage
 SEC("tracepoint/syscalls/sys_enter_openat")
 int trace_openat(struct trace_event_raw_sys_enter *ctx) {
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 pid = pid_tgid >> 32;
-
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
     struct lineage_entry_t *entry = bpf_map_lookup_elem(&lineage_map, &pid);
     if (!entry) return 0;
+    struct scratch_t *s = get_scratch();
+    if (!s) return 0;
 
-    struct file_event_t event = {};
-    event.pid = pid;
-    event.ns_pid = entry->ns_pid;
-    event.lineage_id = entry->lineage_id;
-    bpf_get_current_comm(&event.comm, sizeof(event.comm));
-    event.flags = ctx->args[2];
-
-    const char *filename = (const char *)ctx->args[1];
-    bpf_probe_read_user_str(&event.path, MAX_PATH_LEN, filename);
-
-    bpf_ringbuf_output(&file_events, &event, sizeof(event), 0);
+    struct file_event_t *f = &s->fe;
+    f->pid = pid;
+    f->ns_pid = entry->ns_pid;
+    f->lineage_id = entry->lineage_id;
+    f->flags = ctx->args[2];
+    bpf_get_current_comm(&f->comm, sizeof(f->comm));
+    bpf_probe_read_user_str(f->path, MAX_PATH_LEN, (const char *)ctx->args[1]);
+    bpf_ringbuf_output(&file_events, f, sizeof(*f), 0);
     return 0;
 }
 
-// Tracepoint: sys_exit_execve - cleanup on exec failure
 SEC("tracepoint/syscalls/sys_exit_execve")
 int trace_exit_execve(struct trace_event_raw_sys_exit *ctx) {
-    long ret = ctx->ret;
-    if (ret < 0) {
-        u64 pid_tgid = bpf_get_current_pid_tgid();
-        u32 pid = pid_tgid >> 32;
+    if (ctx->ret < 0) {
+        u32 pid = bpf_get_current_pid_tgid() >> 32;
         bpf_map_delete_elem(&lineage_map, &pid);
     }
     return 0;
 }
 
-// Sched_process_exit - cleanup lineage on process exit
 SEC("tracepoint/sched/sched_process_exit")
 int trace_sched_exit(struct trace_event_raw_sched_process_template *ctx) {
     u32 pid = ctx->pid;
     struct lineage_entry_t *entry = bpf_map_lookup_elem(&lineage_map, &pid);
-    if (entry) {
+    if (entry)
         entry->flags |= LINEAGE_FLAG_KILLED;
-        bpf_map_update_elem(&lineage_map, &pid, entry, BPF_ANY);
-    }
     return 0;
 }
 
-// LSM hook: bprm_check_security - enforce blocked lineage at execve (defense-in-depth)
-SEC("lsm/bprm_check_security")
-int BPF_PROG(bprm_check_security_lsm, struct linux_binprm *bprm) {
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 pid = pid_tgid >> 32;
-    u32 uid = bpf_get_current_uid_gid();
-
-    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-    u32 ppid = BPF_CORE_READ(task, real_parent, tgid);
-
-    struct lineage_entry_t *parent_ptr = bpf_map_lookup_elem(&lineage_map, &ppid);
-    u64 parent_lineage_id = 0;
-    if (parent_ptr) {
-        parent_lineage_id = parent_ptr->lineage_id;
-    }
-
-    // Read binary path
-    char binary_path[MAX_PATH_LEN] = {};
-    bpf_probe_read_user_str(&binary_path, MAX_PATH_LEN, bprm->filename);
-
-    // Generate lineage ID (same logic as tracepoint)
-    u64 timestamp = bpf_ktime_get_ns();
-    u64 lineage_id = lineage_hash(parent_lineage_id, binary_path, uid, timestamp);
-
-    // Check if this lineage is blocked
-    if (is_lineage_blocked(lineage_id) || (parent_ptr && is_lineage_blocked(parent_lineage_id))) {
-        struct alert_event_t alert = {};
-        alert.lineage_id = lineage_id;
-        alert.pid = pid;
-        alert.ns_pid = BPF_CORE_READ(task, tgid);
-        alert.rule_id = 0xFFFFFFFF;
-        alert.action = ACTION_KILL;
-        bpf_get_current_comm(&alert.comm, sizeof(alert.comm));
-        bpf_probe_read_user_str(&alert.binary_path, MAX_PATH_LEN, bprm->filename);
-        __builtin_memcpy(&alert.matched_pattern, "BLOCKED_LINEAGE_LSM", 19);
-        alert.timestamp = timestamp;
-        bpf_ringbuf_output(&alert_events, &alert, sizeof(alert), 0);
-
-        return -EPERM;
-    }
-
-    return 0;
-}
-
-// Tracepoint: sys_enter_execveat - catches fexecve, memfd_create execve
-SEC("tracepoint/syscalls/sys_enter_execveat")
-int trace_execveat(struct trace_event_raw_sys_enter *ctx) {
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 pid = pid_tgid >> 32;
-    u32 uid = bpf_get_current_uid_gid();
-    u32 gid = bpf_get_current_uid_gid() >> 32;
-
-    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-    u32 ppid = BPF_CORE_READ(task, real_parent, tgid);
-    u32 ns_pid = get_ns_pid(task);
-
-    struct lineage_entry_t *parent_ptr = bpf_map_lookup_elem(&lineage_map, &ppid);
-    u64 parent_lineage_id = 0;
-    if (parent_ptr) {
-        parent_lineage_id = parent_ptr->lineage_id;
-    }
-
-    int dfd = ctx->args[0];
-    const char *filename = (const char *)ctx->args[1];
-    char binary_path[MAX_PATH_LEN] = {};
-    char cmdline[512] = {};
-
-    if (dfd == AT_FDCWD) {
-        bpf_probe_read_user_str(&binary_path, MAX_PATH_LEN, filename);
-    } else {
-        char fd_path[64];
-        bpf_probe_read_user_str(&fd_path, 64, filename);
-        bpf_probe_read_user_str(&binary_path, MAX_PATH_LEN, fd_path);
-    }
-
-    const char *const *argv = (const char *const *)ctx->args[2];
-    const char *arg0;
-    if (bpf_probe_read_user(&arg0, sizeof(arg0), argv) == 0 && arg0) {
-        bpf_probe_read_user_str(&cmdline, 512, arg0);
-    }
-
-    u64 timestamp = bpf_ktime_get_ns();
-    u64 lineage_id = lineage_hash(parent_lineage_id, binary_path, uid, timestamp);
-
-    if (is_lineage_blocked(lineage_id) || (parent_ptr && is_lineage_blocked(parent_lineage_id))) {
-        bpf_send_signal(SIGKILL);
-
-        struct alert_event_t alert = {};
-        alert.lineage_id = lineage_id;
-        alert.pid = pid;
-        alert.ns_pid = ns_pid;
-        alert.rule_id = 0xFFFFFFFF;
-        alert.action = ACTION_KILL;
-        bpf_get_current_comm(&alert.comm, sizeof(alert.comm));
-        bpf_probe_read_user_str(&alert.binary_path, MAX_PATH_LEN, filename);
-        __builtin_memcpy(&alert.matched_pattern, "BLOCKED_LINEAGE_EXECVEAT", 24);
-        alert.timestamp = timestamp;
-        bpf_ringbuf_output(&alert_events, &alert, sizeof(alert), 0);
-
-        return 0;
-    }
-
-    u32 flags = 0;
-    if (uid == 0) flags |= LINEAGE_FLAG_ROOT;
-    if (is_trusted_binary(binary_path)) flags |= LINEAGE_FLAG_TRUSTED;
-    if (parent_lineage_id == 0) flags |= LINEAGE_FLAG_ANONYMOUS;
-
-    struct lineage_entry_t entry = {};
-    entry.lineage_id = lineage_id;
-    entry.parent_lineage_id = parent_lineage_id;
-    entry.pid = pid;
-    entry.ppid = ppid;
-    entry.uid = uid;
-    entry.gid = gid;
-    entry.ns_pid = ns_pid;
-    entry.exec_timestamp = timestamp;
-    entry.flags = flags;
-    bpf_get_current_comm(&entry.comm, sizeof(entry.comm));
-    bpf_probe_read_user_str(&entry.binary_path, MAX_PATH_LEN, filename);
-    bpf_probe_read_user_str(&entry.cmdline, 512, arg0);
-
-    bpf_map_update_elem(&lineage_map, &pid, &entry, BPF_ANY);
-    bpf_map_update_elem(&lineage_by_id, &lineage_id, &entry, BPF_ANY);
-
-    struct proc_event_t proc_event = {};
-    proc_event.pid = pid;
-    proc_event.ppid = ppid;
-    proc_event.uid = uid;
-    proc_event.lineage_id = lineage_id;
-    proc_event.parent_lineage_id = parent_lineage_id;
-    bpf_get_current_comm(&proc_event.comm, sizeof(proc_event.comm));
-    bpf_probe_read_user_str(&proc_event.filename, MAX_PATH_LEN, filename);
-    bpf_probe_read_user_str(&proc_event.cmdline, 512, arg0);
-
-    bpf_ringbuf_output(&exec_events, &proc_event, sizeof(proc_event), 0);
-
-    return 0;
-}
-
-// Tracepoint: sys_enter_sendmsg - catch ICMP raw sockets (covert channels)
+// Counts sendmsg() calls per PID (byte counting would need msghdr parsing).
 SEC("tracepoint/syscalls/sys_enter_sendmsg")
 int trace_sendmsg(struct trace_event_raw_sys_enter *ctx) {
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 pid = pid_tgid >> 32;
-
-    struct lineage_entry_t *entry = bpf_map_lookup_elem(&lineage_map, &pid);
-    if (!entry) return 0;
-
-    // Note: msghdr structure varies by kernel version; skip iov tracking for compatibility
-    // Just track data volume via sendmsg entry
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
+    if (!bpf_map_lookup_elem(&lineage_map, &pid)) return 0;
     u64 *vol = bpf_map_lookup_elem(&data_volume, &pid);
-    u64 new_vol = (vol ? *vol : 0) + 1; // Count sendmsg calls
-    bpf_map_update_elem(&data_volume, &pid, &new_vol, BPF_ANY);
-
+    u64 n = (vol ? *vol : 0) + 1;
+    bpf_map_update_elem(&data_volume, &pid, &n, BPF_ANY);
     return 0;
 }
 
-// LSM hook: bpf - monitor eBPF program loads (prevent malicious BPF)
+static __always_inline void emit_simple_alert(struct scratch_t *s, struct lineage_entry_t *entry,
+                                               u32 pid, u32 rule_id, const char *tag) {
+    struct alert_event_t *a = &s->alert;
+    a->lineage_id = entry->lineage_id;
+    a->pid = pid;
+    a->ns_pid = entry->ns_pid;
+    a->rule_id = rule_id;
+    a->action = ACTION_ALERT;
+    bpf_get_current_comm(&a->comm, sizeof(a->comm));
+    a->binary_path[0] = 0;
+    __builtin_memcpy(a->matched_pattern, tag, 24);
+    a->timestamp = bpf_ktime_get_ns();
+}
+
 SEC("lsm/bpf")
 int BPF_PROG(bpf_lsm, int cmd, union bpf_attr *attr, unsigned int size) {
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 pid = pid_tgid >> 32;
-
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
     struct lineage_entry_t *entry = bpf_map_lookup_elem(&lineage_map, &pid);
     if (!entry) return 0;
-
-    if (cmd == 5 || cmd == 2) { // BPF_PROG_LOAD, BPF_MAP_CREATE
-        if (!(entry->flags & LINEAGE_FLAG_TRUSTED)) {
-            struct alert_event_t alert = {};
-            alert.lineage_id = entry->lineage_id;
-            alert.pid = pid;
-            alert.ns_pid = entry->ns_pid;
-            alert.rule_id = 0xFFFFFFFE;
-            alert.action = ACTION_ALERT;
-            bpf_get_current_comm(&alert.comm, sizeof(alert.comm));
-            alert.timestamp = bpf_ktime_get_ns();
-            char msg[32];
-            __builtin_memcpy(&msg, cmd == 5 ? "BPF_PROG_LOAD" : "BPF_MAP_CREATE", 16);
-            __builtin_memcpy(&alert.matched_pattern, msg, 16);
-            bpf_ringbuf_output(&alert_events, &alert, sizeof(alert), 0);
-        }
-    }
-
+    if ((cmd != 5 && cmd != 2) || (entry->flags & LINEAGE_FLAG_TRUSTED)) return 0;   // PROG_LOAD / MAP_CREATE
+    struct scratch_t *s = get_scratch();
+    if (!s) return 0;
+    emit_simple_alert(s, entry, pid, 0xFFFFFFFE, cmd == 5 ? "BPF_PROG_LOAD" : "BPF_MAP_CREATE");
+    bpf_ringbuf_output(&alert_events, &s->alert, sizeof(s->alert), 0);
     return 0;
 }
 
-// LSM hook: kernel_module_request - monitor kernel module loads
 SEC("lsm/kernel_module_request")
 int BPF_PROG(kernel_module_request_lsm, char *kmod_name) {
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 pid = pid_tgid >> 32;
-
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
     struct lineage_entry_t *entry = bpf_map_lookup_elem(&lineage_map, &pid);
     if (!entry) return 0;
-
-    struct alert_event_t alert = {};
-    alert.lineage_id = entry->lineage_id;
-    alert.pid = pid;
-    alert.ns_pid = entry->ns_pid;
-    alert.rule_id = 0xFFFFFFFD;
-    alert.action = ACTION_ALERT;
-    bpf_get_current_comm(&alert.comm, sizeof(alert.comm));
-    bpf_probe_read_user_str(&alert.binary_path, MAX_PATH_LEN, kmod_name);
-    __builtin_memcpy(&alert.matched_pattern, "KERNEL_MODULE_LOAD", 18);
-    alert.timestamp = bpf_ktime_get_ns();
-    bpf_ringbuf_output(&alert_events, &alert, sizeof(alert), 0);
-
+    struct scratch_t *s = get_scratch();
+    if (!s) return 0;
+    emit_simple_alert(s, entry, pid, 0xFFFFFFFD, "KERNEL_MODULE_LOAD");
+    bpf_probe_read_kernel_str(s->alert.binary_path, MAX_PATH_LEN, kmod_name);
+    bpf_ringbuf_output(&alert_events, &s->alert, sizeof(s->alert), 0);
     return 0;
 }
 
-// LSM hook: init_module - finit_module syscall
 SEC("lsm/kernel_read_file")
 int BPF_PROG(kernel_read_file_lsm, struct file *file, enum kernel_read_file_id id) {
-    if (id == 6) { // READING_MODULE
-        u64 pid_tgid = bpf_get_current_pid_tgid();
-        u32 pid = pid_tgid >> 32;
-
-        struct lineage_entry_t *entry = bpf_map_lookup_elem(&lineage_map, &pid);
-        if (!entry) return 0;
-
-        struct alert_event_t alert = {};
-        alert.lineage_id = entry->lineage_id;
-        alert.pid = pid;
-        alert.ns_pid = entry->ns_pid;
-        alert.rule_id = 0xFFFFFFFD;
-        alert.action = ACTION_ALERT;
-        bpf_get_current_comm(&alert.comm, sizeof(alert.comm));
-
-        // Read path from file->f_path
-        struct path path = {};
-        bpf_core_read(&path, sizeof(path), &file->f_path);
-        struct dentry *dentry = BPF_CORE_READ(&path, dentry);
-        bpf_probe_read_user_str(&alert.binary_path, MAX_PATH_LEN, dentry->d_name.name);
-        __builtin_memcpy(&alert.matched_pattern, "MODULE_READ_FILE", 16);
-        alert.timestamp = bpf_ktime_get_ns();
-        bpf_ringbuf_output(&alert_events, &alert, sizeof(alert), 0);
-    }
+    if (id != READING_MODULE) return 0;
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
+    struct lineage_entry_t *entry = bpf_map_lookup_elem(&lineage_map, &pid);
+    if (!entry) return 0;
+    struct scratch_t *s = get_scratch();
+    if (!s) return 0;
+    emit_simple_alert(s, entry, pid, 0xFFFFFFFD, "MODULE_READ_FILE");
+    fill_file_path(s->alert.binary_path, file);
+    bpf_ringbuf_output(&alert_events, &s->alert, sizeof(s->alert), 0);
     return 0;
 }
 

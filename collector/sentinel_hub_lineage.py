@@ -20,7 +20,7 @@ from flask import Flask, request, jsonify, Response, send_file, abort, redirect,
 from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app)
+# Dashboard is same-origin, so no CORS: cross-origin pages must not reach this API.
 
 # ─── Auth + persistence (sentinel_auth) ───
 import sys as _sys
@@ -54,6 +54,7 @@ _admin_pw = os.getenv("SENTINEL_ADMIN_PASSWORD")
 sa.ensure_user(_admin_user, _admin_pw)
 
 PUBLIC_PATHS = ("/login", "/health", "/metrics", "/favicon.ico")
+ADMIN_WRITE_PREFIXES = ("/api/v1/rules", "/api/v1/geo", "/api/v1/lineage/")
 OPEN_API = ("/api/v1/stats",)  # monitoring endpoints stay open (read-only counters)
 
 
@@ -353,6 +354,13 @@ def static_files(filename):
 @app.before_request
 def _auth_gate():
     p = request.path
+    # Admin writes (rules, geo policy, lineage block/trust) need a dashboard session
+    # AND a CSRF token. The shared agent key must never be enough to change policy.
+    if request.method in ("POST", "PUT", "DELETE") and p.startswith(ADMIN_WRITE_PREFIXES):
+        tok = request.cookies.get("sentinel_session", "")
+        if not (sa.session_verify(tok) and sa.csrf_verify(tok, request.headers.get("X-CSRF-Token", ""))):
+            return jsonify({"error": "forbidden"}), 403
+        return None
     if p in PUBLIC_PATHS or p.startswith(("/login", "/api/v1/login")):
         return None
     if any(p.startswith(o) for o in OPEN_API):
