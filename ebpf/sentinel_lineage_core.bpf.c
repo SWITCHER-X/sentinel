@@ -13,6 +13,20 @@
 #define MAX_PATH_LEN 256
 #define LINEAGE_ID_SEED 0x9e3779b97f4a7c15
 
+// Missing constants from kernel headers
+#ifndef EPERM
+#define EPERM 1
+#endif
+#ifndef SIGKILL
+#define SIGKILL 9
+#endif
+#ifndef AF_INET
+#define AF_INET 2
+#endif
+#ifndef AT_FDCWD
+#define AT_FDCWD -100
+#endif
+
 struct lineage_entry_t {
     u64 lineage_id;
     u64 parent_lineage_id;
@@ -247,7 +261,6 @@ int BPF_PROG(task_kill_lsm, struct task_struct *p, struct kernel_siginfo *info, 
     struct lineage_entry_t *entry = bpf_map_lookup_elem(&lineage_map, &pid);
     if (!entry) return 0;
 
-    // Protect Sentinel's own lineage from being killed
     if (entry->flags & LINEAGE_FLAG_TRUSTED) {
         u32 sender_pid = bpf_get_current_pid_tgid() >> 32;
         struct lineage_entry_t *sender = bpf_map_lookup_elem(&lineage_map, &sender_pid);
@@ -300,7 +313,7 @@ int trace_execve(struct trace_event_raw_sys_enter *ctx) {
         parent_lineage_id = parent_ptr->lineage_id;
     }
 
-    // Read binary path
+    // Read binary path from tracepoint args
     const char __user *filename = (const char __user *)ctx->args[0];
     char binary_path[MAX_PATH_LEN] = {};
     bpf_probe_read_user_str(&binary_path, MAX_PATH_LEN, filename);
