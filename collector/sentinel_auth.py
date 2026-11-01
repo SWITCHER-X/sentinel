@@ -165,7 +165,10 @@ def check_user(username: str, password: str):
 
 # ─── Sessions (HMAC-signed tokens — stdlib) ───
 def _secret():
-    return (os.getenv("SENTINEL_SESSION_SECRET") or "dev-insecure-secret").encode()
+    secret = os.getenv("SENTINEL_SESSION_SECRET")
+    if not secret:
+        raise RuntimeError("SENTINEL_SESSION_SECRET must be set in environment")
+    return secret.encode()
 
 
 def session_create(ttl: int = 12 * 3600) -> str:
@@ -197,29 +200,59 @@ def csrf_verify(session_token: str, provided: str) -> bool:
     return bool(session_token) and hmac.compare_digest(csrf_for(session_token), provided or "")
 
 
-# ─── Login rate-limit (in-memory, per-IP) ──
+# ─── Login rate-limit (per-IP) ──
+# Counters live in-process by default. When a StateBackend is attached (the hub
+# attaches one at boot) they are shared, so a multi-worker deployment throttles
+# an attacker consistently instead of per worker.
 _failures = {}
+_state_backend = None
+
+
+def set_state_backend(backend) -> None:
+    """Attach a StateBackend so login throttling is shared across workers."""
+    global _state_backend
+    _state_backend = backend
+
+
+def _load_fail(ip):
+    if _state_backend is not None:
+        return _state_backend.get_login_failures(ip)
+    return _failures.get(ip, (0, 0))
+
+
+def _save_fail(ip, fails, until):
+    if _state_backend is not None:
+        _state_backend.set_login_failures(ip, fails, until)
+    else:
+        _failures[ip] = (fails, until)
+
+
+def _clear_fail(ip):
+    if _state_backend is not None:
+        _state_backend.clear_login_failures(ip)
+    else:
+        _failures.pop(ip, None)
 
 
 def login_attempts(ip: str):
     """Returns (allowed, retry_after). 5 failures → 60s lockout."""
     now = time.time()
-    fails, until = _failures.get(ip, (0, 0))
+    fails, until = _load_fail(ip)
     if until and now < until:
         return False, int(until - now)
     if fails >= 5:
-        _failures[ip] = (0, now + 60)
+        _save_fail(ip, 0, now + 60)
         return False, 60
     return True, 0
 
 
 def login_fail(ip: str):
-    fails, until = _failures.get(ip, (0, 0))
-    _failures[ip] = (fails + 1, until)
+    fails, until = _load_fail(ip)
+    _save_fail(ip, fails + 1, until)
 
 
 def login_reset(ip: str):
-    _failures.pop(ip, None)
+    _clear_fail(ip)
 
 
 # ─── Allowlist (tiered) + signed distribution ───
@@ -250,7 +283,7 @@ def allowlist_all() -> list:
 
 
 def allowlist_secret() -> bytes:
-    """Key used to sign the allowlist blob. From env or /etc/sentinel, else dev fallback."""
+    """Key used to sign the allowlist blob. From env or /etc/sentinel."""
     path = os.getenv("SENTINEL_ALLOWLIST_KEY_FILE",
                      os.path.join(os.path.dirname(os.path.abspath(__file__)), "allowlist.key"))
     try:
@@ -260,7 +293,10 @@ def allowlist_secret() -> bytes:
             return key.encode()
     except OSError:
         pass
-    return (os.getenv("SENTINEL_ALLOWLIST_KEY") or "dev-insecure-allowlist-key").encode()
+    env_key = os.getenv("SENTINEL_ALLOWLIST_KEY")
+    if not env_key:
+        raise RuntimeError("SENTINEL_ALLOWLIST_KEY must be set in environment")
+    return env_key.encode()
 
 
 def allowlist_sign(blob: dict) -> str:

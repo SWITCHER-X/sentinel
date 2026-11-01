@@ -338,7 +338,7 @@ Project SENTINEL is **alpha** software (v1.0.0), developed and tested on a singl
 - **Lineage propagation:** blocking covers direct children of a blocked lineage. Deeper descendants, and blocks made from the dashboard, are not yet pushed to the kernel map.
 - **Kernel trust map:** the in-kernel allowlist and `task_kill` self-protection depend on a key format that the agent's allowlist sync does not yet produce.
 - **Network detectors:** geo-blocking, DNS-rate, ICMP and data-volume checks are partially implemented.
-- **Hub scale:** state is single-process and in-memory, with a 10,000-event buffer and per-event persistence.
+- **Hub scale:** state is held behind a pluggable backend (`collector/state.py`). In-memory is the default and is still single-process — run one gunicorn worker. Set `SENTINEL_REDIS_URL` to move state into Redis and scale workers. A 10,000-event buffer and per-event persistence still bound throughput.
 - **Loader:** the agent compiles eBPF source through BCC at start-up. `make build` produces a CO-RE object that the agent does not consume yet.
 
 ---
@@ -346,9 +346,25 @@ Project SENTINEL is **alpha** software (v1.0.0), developed and tested on a singl
 ## Production notes
 
 - Put the hub behind a TLS-terminating reverse proxy (nginx or Caddy). The built-in server speaks plain HTTP.
-- Serve with `gunicorn -w 1 --threads 8`. A single worker is required because state is in-process.
-- Set `SENTINEL_SESSION_SECRET`, `SENTINEL_ALLOWLIST_KEY` and `SENTINEL_AGENT_KEY` explicitly. The installer generates them for you.
+- Set `SENTINEL_SESSION_SECRET`, `SENTINEL_ALLOWLIST_KEY`, `SENTINEL_AGENT_KEY` and `SENTINEL_ADMIN_PASSWORD` explicitly — the hub refuses to start without them. The installer generates them for you.
 - Restrict the hub port to your management network.
+
+### Hub scaling — two modes
+
+State (telemetry ring, SSE delivery, lineage trees, block/trust sets, login
+throttle, runtime mode) lives behind `collector/state.py`. Which backend you get
+decides how many gunicorn workers you may run.
+
+| Mode | Env | Workers | Command |
+|---|---|---|---|
+| **Single-node** (default) | `SENTINEL_REDIS_URL` unset | **exactly 1** | `gunicorn -w 1 --threads 8 -b 0.0.0.0:5000 sentinel_hub_lineage:app` |
+| **Multi-worker** | `SENTINEL_REDIS_URL=redis://…` | 4+ | `gunicorn -w 4 --threads 8 -b 0.0.0.0:5000 sentinel_hub_lineage:app` |
+
+In single-node mode a second worker would hold a *separate* copy of state, so
+`-w 1` is mandatory. With Redis, every worker reads and writes the same state:
+SSE streams are consistent, the runtime mode is shared, and login throttling is
+enforced once across the fleet instead of per worker. Redis support needs
+`pip install redis`.
 
 ---
 

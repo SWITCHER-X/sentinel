@@ -11,6 +11,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "collector"))
 os.environ.setdefault("SENTINEL_DB_PATH", tempfile.mktemp(suffix=".db"))
+# sentinel_auth fails closed without these; tests supply their own.
+os.environ.setdefault("SENTINEL_SESSION_SECRET", "test-session-secret")
+os.environ.setdefault("SENTINEL_ALLOWLIST_KEY", "test-allowlist-key")
 
 import sentinel_auth as sa  # noqa: E402
 

@@ -19,6 +19,10 @@ flask-cors>=4.0.0
 # Production WSGI server (recommended for enterprise deployments)
 gunicorn>=21.2.0
 
+# Multi-worker hub state (optional — only needed when SENTINEL_REDIS_URL is set;
+# without it the hub uses in-memory state and must run with a single worker)
+# redis>=5.0.0
+
 # Optional: for development
 # pytest>=7.4.0
 # black>=23.0.0
