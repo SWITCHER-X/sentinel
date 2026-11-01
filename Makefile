@@ -17,8 +17,16 @@ LLC := llc
 # Legacy flags (kernel headers required)
 BPF_CFLAGS_LEGACY := -target bpf -D__TARGET_ARCH_x86 -I/usr/include -I/usr/include/bpf -Wall -O2 -g
 
-# CO-RE flags (no kernel headers needed — uses vmlinux.h)
-BPF_CFLAGS_CORE := -target bpf -D__TARGET_ARCH_x86 -I./ebpf -Wall -O2 -g
+# Directory holding libbpf's bpf_helpers.h (the "bpf" dir). Override with e.g.
+#   make build-core BPF_INC=/path/to/include/bpf
+BPF_INC := $(firstword $(wildcard /usr/include/bpf /usr/local/include/bpf \
+  /usr/include/$(shell uname -m)-linux-gnu/bpf))
+# The include ROOT is its parent, so that <bpf/bpf_helpers.h> resolves.
+BPF_INC_ROOT := $(patsubst %/bpf,%,$(BPF_INC))
+
+# CO-RE flags (no kernel headers needed — uses vmlinux.h + libbpf helpers)
+BPF_CFLAGS_CORE := -target bpf -D__TARGET_ARCH_x86 -I./ebpf \
+  $(if $(BPF_INC_ROOT),-I$(BPF_INC_ROOT),) -Wall -O2 -g
 
 .PHONY: all build build-legacy build-core verify test run-hub run-agent simulate live-test demo install-deps setup-kernel package clean help
 
@@ -31,7 +39,7 @@ build: build-core
 build-legacy: $(BPF_OBJ_LEGACY)
 
 ## build-core — compile CO-RE eBPF program (recommended)
-build-core: $(BPF_OBJ_CORE)
+build-core: check-bpf-hdrs $(BPF_OBJ_CORE)
 
 $(BPF_OBJ_LEGACY): $(BPF_SRC_LEGACY)
 	@mkdir -p build
@@ -45,11 +53,22 @@ $(BPF_OBJ_CORE): $(BPF_SRC_CORE)
 	$(CLANG) $(BPF_CFLAGS_CORE) -c $(BPF_SRC_CORE) -o $@
 	@echo "[✓] Built $@"
 
-## verify — syntax-check both eBPF sources
-verify:
-	$(CLANG) $(BPF_CFLAGS_LEGACY) -fsyntax-only $(BPF_SRC_LEGACY)
+## verify — syntax-check the CO-RE eBPF source
+verify: check-bpf-hdrs
 	$(CLANG) $(BPF_CFLAGS_CORE) -fsyntax-only $(BPF_SRC_CORE)
-	@echo "[✓] Both eBPF syntax OK"
+	@echo "[✓] CO-RE eBPF syntax OK"
+
+## check-bpf-hdrs — fail early with an actionable message if libbpf headers are absent
+.PHONY: check-bpf-hdrs
+check-bpf-hdrs:
+	@if [ ! -f "$(BPF_INC)/bpf_helpers.h" ]; then \
+	  echo "error: libbpf development headers not found (looked for <include>/bpf/bpf_helpers.h)."; \
+	  echo "       Debian/Ubuntu: sudo apt-get install -y libbpf-dev clang llvm"; \
+	  echo "       Fedora/RHEL:   sudo dnf install -y libbpf-devel clang llvm"; \
+	  echo "       Arch:          sudo pacman -S --needed libbpf clang llvm"; \
+	  echo "       Other:         make build-core BPF_INC=/path/to/include/bpf"; \
+	  exit 1; \
+	fi
 
 ## test — run the Python test suites (lineage, auth, state backend, rules)
 test:
