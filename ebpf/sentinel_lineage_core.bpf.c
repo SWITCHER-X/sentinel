@@ -287,7 +287,7 @@ int BPF_PROG(file_open_lsm, struct file *file) {
     event.lineage_id = entry->lineage_id;
     event.flags = BPF_CORE_READ(file, f_flags);
 
-    struct path *path = BPF_CORE_READ(file, f_path);
+    struct path path = BPF_CORE_READ(file, f_path);
     struct dentry *dentry = BPF_CORE_READ(path, dentry);
     bpf_core_read_user_str(&event.path, MAX_PATH_LEN, dentry->d_name.name);
 
@@ -314,13 +314,13 @@ int trace_execve(struct trace_event_raw_sys_enter *ctx) {
     }
 
     // Read binary path from tracepoint args
-    const char __user *filename = (const char __user *)ctx->args[0];
+    const char *filename = (const char *)ctx->args[0];
     char binary_path[MAX_PATH_LEN] = {};
     bpf_probe_read_user_str(&binary_path, MAX_PATH_LEN, filename);
 
     // Read argv for cmdline
-    const char __user *const __user *argv = (const char __user *const __user *)ctx->args[1];
-    const char __user *arg0;
+    const char *const *argv = (const char *const *)ctx->args[1];
+    const char *arg0;
     char cmdline[512] = {};
     if (bpf_probe_read_user(&arg0, sizeof(arg0), argv) == 0 && arg0) {
         bpf_probe_read_user_str(&cmdline, 512, arg0);
@@ -392,7 +392,7 @@ int trace_execve(struct trace_event_raw_sys_enter *ctx) {
 // Tracepoint: sys_enter_connect - network with lineage
 SEC("tracepoint/syscalls/sys_enter_connect")
 int trace_connect(struct trace_event_raw_sys_enter *ctx) {
-    struct sockaddr __user *uservaddr = (struct sockaddr __user *)ctx->args[1];
+    const struct sockaddr *uservaddr = (const struct sockaddr *)ctx->args[1];
     u16 family = 0;
     bpf_probe_read_user(&family, sizeof(family), &uservaddr->sa_family);
     if (family != AF_INET) return 0;
@@ -403,7 +403,7 @@ int trace_connect(struct trace_event_raw_sys_enter *ctx) {
     struct lineage_entry_t *entry = bpf_map_lookup_elem(&lineage_map, &pid);
     if (!entry) return 0;
 
-    struct sockaddr_in *addr = (struct sockaddr_in *)uservaddr;
+    const struct sockaddr_in *addr = (const struct sockaddr_in *)uservaddr;
     struct conn_event_t event = {};
     event.pid = pid;
     event.ns_pid = entry->ns_pid;
@@ -433,7 +433,7 @@ int trace_openat(struct trace_event_raw_sys_enter *ctx) {
     bpf_get_current_comm(&event.comm, sizeof(event.comm));
     event.flags = ctx->args[2];
 
-    const char __user *filename = (const char __user *)ctx->args[1];
+    const char *filename = (const char *)ctx->args[1];
     bpf_probe_read_user_str(&event.path, MAX_PATH_LEN, filename);
 
     bpf_ringbuf_output(&file_events, &event, sizeof(event), 0);
@@ -527,7 +527,7 @@ int trace_execveat(struct trace_event_raw_sys_enter *ctx) {
     }
 
     int dfd = ctx->args[0];
-    const char __user *filename = (const char __user *)ctx->args[1];
+    const char *filename = (const char *)ctx->args[1];
     char binary_path[MAX_PATH_LEN] = {};
     char cmdline[512] = {};
 
@@ -539,8 +539,8 @@ int trace_execveat(struct trace_event_raw_sys_enter *ctx) {
         bpf_probe_read_user_str(&binary_path, MAX_PATH_LEN, fd_path);
     }
 
-    const char __user *const __user *argv = (const char __user *const __user *)ctx->args[2];
-    const char __user *arg0;
+    const char *const *argv = (const char *const *)ctx->args[2];
+    const char *arg0;
     if (bpf_probe_read_user(&arg0, sizeof(arg0), argv) == 0 && arg0) {
         bpf_probe_read_user_str(&cmdline, 512, arg0);
     }
@@ -612,8 +612,8 @@ int trace_sendmsg(struct trace_event_raw_sys_enter *ctx) {
     struct lineage_entry_t *entry = bpf_map_lookup_elem(&lineage_map, &pid);
     if (!entry) return 0;
 
-    struct msghdr __user *msg = (struct msghdr __user *)ctx->args[1];
-    struct iovec __user *iov = BPF_CORE_READ(msg, msg_iov);
+    struct msghdr *msg = (struct msghdr *)ctx->args[1];
+    struct iovec *iov = BPF_CORE_READ(msg, msg_iov);
     unsigned long iovlen = BPF_CORE_READ(msg, msg_iovlen);
 
     u64 total_len = 0;
@@ -705,7 +705,7 @@ int BPF_PROG(kernel_read_file_lsm, struct file *file, enum kernel_read_file_id i
         alert.action = ACTION_ALERT;
         bpf_get_current_comm(&alert.comm, sizeof(alert.comm));
 
-        struct path *path = BPF_CORE_READ(file, f_path);
+        struct path path = BPF_CORE_READ(file, f_path);
         struct dentry *dentry = BPF_CORE_READ(path, dentry);
         bpf_probe_read_user_str(&alert.binary_path, MAX_PATH_LEN, dentry->d_name.name);
         __builtin_memcpy(&alert.matched_pattern, "MODULE_READ_FILE", 16);
