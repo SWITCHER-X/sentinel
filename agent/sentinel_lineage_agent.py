@@ -295,7 +295,8 @@ def load_rules():
                     rule.compiled_pattern = re.compile(rule.pattern, re.IGNORECASE)
                 except Exception:
                     rule.compiled_pattern = None
-            if rule.binary_pattern and (rule.flags & RF_REGEX):
+            # Always compile binary_pattern when RF_BINARY flag is set (Medium #11)
+            if rule.binary_pattern and (rule.flags & RF_BINARY):
                 try:
                     rule.compiled_binary = re.compile(rule.binary_pattern, re.IGNORECASE)
                 except Exception:
@@ -370,6 +371,12 @@ def match_rule(entry: LineageEntry, rule: Rule) -> bool:
             if not rule.compiled_pattern.search(target):
                 return False
         elif rule.pattern.lower() not in target.lower():
+            return False
+
+    # If rule has NETWORK or FILE_WRITE flags but no cmdline/binary/lineage/uid criteria,
+    # it should not match here (those are handled separately in agent)
+    if rule.flags & (RF_NETWORK | RF_FILE_WRITE):
+        if not (rule.flags & (RF_CMDLINE | RF_BINARY | RF_LINEAGE | RF_UID_RANGE)):
             return False
 
     # If rule has no matching criteria at all, it should not match
@@ -465,6 +472,12 @@ def handle_exec_event(cpu, data, size):
                 alert["tags"] = list(set((alert.get("tags") or []) + ["learn-mode"]))
                 entry.alerts[-1]["action"] = "LOG"
                 print(f"[-] LEARN MODE (no enforcement): {rule.name} -> PID {pid}")
+            elif entry.flags & LF_TRUSTED:
+                # Trusted binary/process — never enforce, only log
+                alert["action"] = "LOG"
+                alert["tags"] = list(set((alert.get("tags") or []) + ["trusted-binary"]))
+                entry.alerts[-1]["action"] = "LOG"
+                print(f"[-] TRUSTED BINARY (no enforcement): {rule.name} -> PID {pid} ({binary_path})")
             elif rule.action == "KILL":
                 kill_process(pid, entry, rule)
             elif rule.action == "BLOCK":
