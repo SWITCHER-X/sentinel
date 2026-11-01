@@ -31,7 +31,11 @@ CONFIG_PATH = os.getenv("SENTINEL_CONFIG", os.path.join(_PROJECT_DIR, "config", 
 GEO_RULES_FILE = os.getenv("SENTINEL_GEO_RULES", os.path.join(_PROJECT_DIR, "config", "geo_rules.json"))
 LINEAGE_DB_PATH = os.getenv("SENTINEL_DB", os.path.join(_SCRIPT_DIR, "lineage_db.json"))
 TRUSTED_BINARIES_FILE = os.getenv("SENTINEL_TRUSTED", os.path.join(_PROJECT_DIR, "config", "trusted_binaries.json"))
-EBPF_SOURCE = os.getenv("SENTINEL_EBPF", os.path.join(_PROJECT_DIR, "ebpf", "sentinel_lineage.bpf.c"))
+EBPF_SOURCE_CORE = os.getenv("SENTINEL_EBPF_CORE", os.path.join(_PROJECT_DIR, "ebpf", "sentinel_lineage_core.bpf.c"))
+EBPF_SOURCE_LEGACY = os.getenv("SENTINEL_EBPF", os.path.join(_PROJECT_DIR, "ebpf", "sentinel_lineage.bpf.c"))
+
+# Default to CO-RE (works everywhere with BTF)
+EBPF_SOURCE = EBPF_SOURCE_CORE
 COLLECTOR_URL = os.getenv("SENTINEL_COLLECTOR_URL", "http://127.0.0.1:5000/api/v1/telemetry")
 
 # ─── Enforcement mode (learn = observe-only; hub is the source of truth) ───

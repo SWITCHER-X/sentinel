@@ -3,27 +3,53 @@
 VERSION := $(shell cat VERSION 2>/dev/null || echo 0.0.0)
 PKG_NAME := sentinel-lineage-edr-$(VERSION)
 
-BPF_SRC := ebpf/sentinel_lineage.bpf.c
-BPF_OBJ := build/sentinel_lineage.o
+# Legacy build (needs kernel headers matching running kernel)
+BPF_SRC_LEGACY := ebpf/sentinel_lineage.bpf.c
+BPF_OBJ_LEGACY := build/sentinel_lineage.o
+
+# CO-RE build (Compile Once, Run Everywhere — uses vmlinux.h + BTF)
+BPF_SRC_CORE := ebpf/sentinel_lineage_core.bpf.c
+BPF_OBJ_CORE := build/sentinel_lineage_core.o
+
 CLANG := clang
-BPF_CFLAGS := -target bpf -D__TARGET_ARCH_x86 -I/usr/include -I/usr/include/bpf -Wall -O2 -g
+LLC := llc
 
-.PHONY: all build verify test run-hub run-agent simulate live-test demo install-deps setup-kernel package clean help
+# Legacy flags (kernel headers required)
+BPF_CFLAGS_LEGACY := -target bpf -D__TARGET_ARCH_x86 -I/usr/include -I/usr/include/bpf -Wall -O2 -g
 
-all: build test
+# CO-RE flags (no kernel headers needed — uses vmlinux.h)
+BPF_CFLAGS_CORE := -target bpf -D__TARGET_ARCH_x86 -I./ebpf -Wall -O2 -g
 
-## build — compile the eBPF program (needs clang + kernel headers)
-build: $(BPF_OBJ)
-$(BPF_OBJ): $(BPF_SRC)
+.PHONY: all build build-legacy build-core verify test run-hub run-agent simulate live-test demo install-deps setup-kernel package clean help
+
+all: build-core test
+
+## build — compile CO-RE eBPF program (works on any kernel with BTF)
+build: build-core
+
+## build-legacy — compile legacy eBPF program (needs matching kernel headers)
+build-legacy: $(BPF_OBJ_LEGACY)
+
+## build-core — compile CO-RE eBPF program (recommended)
+build-core: $(BPF_OBJ_CORE)
+
+$(BPF_OBJ_LEGACY): $(BPF_SRC_LEGACY)
 	@mkdir -p build
-	@echo "[*] Compiling eBPF program…"
-	$(CLANG) $(BPF_CFLAGS) -c $(BPF_SRC) -o $@
+	@echo "[*] Compiling legacy eBPF program (needs kernel headers)..."
+	$(CLANG) $(BPF_CFLAGS_LEGACY) -c $(BPF_SRC_LEGACY) -o $@
 	@echo "[✓] Built $@"
 
-## verify — syntax-check the eBPF source without a full build
+$(BPF_OBJ_CORE): $(BPF_SRC_CORE)
+	@mkdir -p build
+	@echo "[*] Compiling CO-RE eBPF program (uses vmlinux.h)..."
+	$(CLANG) $(BPF_CFLAGS_CORE) -c $(BPF_SRC_CORE) -o $@
+	@echo "[✓] Built $@"
+
+## verify — syntax-check both eBPF sources
 verify:
-	$(CLANG) $(BPF_CFLAGS) -fsyntax-only $(BPF_SRC)
-	@echo "[✓] eBPF syntax OK"
+	$(CLANG) $(BPF_CFLAGS_LEGACY) -fsyntax-only $(BPF_SRC_LEGACY)
+	$(CLANG) $(BPF_CFLAGS_CORE) -fsyntax-only $(BPF_SRC_CORE)
+	@echo "[✓] Both eBPF syntax OK"
 
 ## test — run the Python test suite
 test:
