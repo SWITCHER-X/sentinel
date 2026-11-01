@@ -1,4 +1,4 @@
-# Sentinel Lineage EDR - Dockerfile
+# Project SENTINEL - Dockerfile
 # Multi-stage build for eBPF compilation and runtime
 
 # ─── Build Stage ───

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Sentinel Lineage Agent - Signature-based process lineage tracking
+Project SENTINEL Agent - Signature-based process lineage tracking
 Integrates with eBPF lineage module for enterprise-grade process tree monitoring
 """
 
@@ -800,7 +800,7 @@ def signal_handler(sig, frame):
 def main():
     global bpf, running
     
-    print("[*] Sentinel Lineage Agent starting...")
+    print("[*] Project SENTINEL Agent starting...")
     print("[*] Loading eBPF program...")
     
     # Load configuration
@@ -860,7 +860,7 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
-    print(f"[*] Sentinel Lineage Engine active (Loaded {len(rules)} rules, {len(trusted_hashes)} trusted binaries)")
+    print(f"[*] Project SENTINEL Engine active (Loaded {len(rules)} rules, {len(trusted_hashes)} trusted binaries)")
     print("[*] Monitoring: execve, connect, openat with lineage tracking")
     print("[*] LSM hooks: task_kill (anti-tamper), file_open (sensitive files)")
     

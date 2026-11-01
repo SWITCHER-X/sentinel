@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# Sentinel Lineage EDR — Linux Installer
+# Project SENTINEL — Linux Installer
 #
 #   sudo ./install.sh                        hub + agent (fresh install)
 #   sudo ./install.sh --hub-only             hub only (no eBPF agent)
@@ -32,7 +32,7 @@ OPT=/opt/sentinel
 VARLIB=/var/lib/sentinel
 ETC=/etc/sentinel
 
-echo "[*] Sentinel Lineage EDR installer"
+echo "[*] Project SENTINEL installer"
 echo "    source : $SRC_DIR"
 echo "    target : $OPT  (state: $VARLIB, config: $ETC)"
 [[ $HUB_ONLY -eq 1 ]] && echo "    mode   : hub only (no eBPF agent)"
@@ -219,7 +219,7 @@ fi
 cat <<EOF
 
 ─────────────────────────────────────────────────────────────
-  Sentinel Lineage EDR installed.
+  Project SENTINEL installed.
 
   Dashboard : http://$(hostname -I 2>/dev/null | awk '{print $1}' || echo localhost):5000/
   Config    : $ETC/sentinel.env

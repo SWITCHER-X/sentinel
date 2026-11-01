@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Sentinel Lineage EDR - Rule Validator
+Project SENTINEL - Rule Validator
 Validates rules.yaml against schema, checks for conflicts, and tests regex patterns.
 """
 
@@ -247,7 +247,7 @@ class RuleValidator:
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Validate Sentinel Lineage rules")
+    parser = argparse.ArgumentParser(description="Validate Project SENTINEL rules")
     parser.add_argument('file', nargs='?', default='/etc/sentinel/rules.yaml',
                         help='Path to rules.yaml')
     parser.add_argument('--json', action='store_true', help='Output JSON')

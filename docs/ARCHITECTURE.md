@@ -1,8 +1,8 @@
-# Sentinel Lineage — Signature-Based Process Lineage EDR
+# Project SENTINEL — Signature-Based Process Lineage EDR
 
 ## Overview
 
-Sentinel Lineage extends the Sentinel eBPF EDR with **signature-based process lineage tracking**. Every process execution gets a unique 64-bit `lineage_id` derived from its parent's lineage, binary path, UID, and timestamp. Children inherit their parent's lineage ID, creating an immutable process tree signature that persists across forks, execves, and container boundaries.
+Project SENTINEL extends the Project SENTINEL eBPF EDR with **signature-based process lineage tracking**. Every process execution gets a unique 64-bit `lineage_id` derived from its parent's lineage, binary path, UID, and timestamp. Children inherit their parent's lineage ID, creating an immutable process tree signature that persists across forks, execves, and container boundaries.
 
 ## Architecture
 

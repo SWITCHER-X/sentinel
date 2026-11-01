@@ -1,4 +1,4 @@
-# Sentinel Lineage EDR — Makefile
+# Project SENTINEL — Makefile
 
 VERSION := $(shell cat VERSION 2>/dev/null || echo 0.0.0)
 PKG_NAME := sentinel-lineage-edr-$(VERSION)

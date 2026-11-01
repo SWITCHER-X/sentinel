@@ -1,5 +1,5 @@
 #!/bin/bash
-# Oracle Cloud Free Tier ARM - Sentinel Lineage EDR bootstrap
+# Oracle Cloud Free Tier ARM - Project SENTINEL bootstrap
 # Run as: sudo bash sentinel-oracle-bootstrap.sh
 # Or paste into "Cloud-init" / "User data" when creating instance
 

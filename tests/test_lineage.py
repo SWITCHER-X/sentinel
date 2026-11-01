@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Sentinel Lineage Test Suite
+Project SENTINEL Test Suite
 Tests signature-based process lineage tracking, inheritance, and kill-switch
 Pure Python tests - no bcc dependency
 """

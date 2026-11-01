@@ -1,5 +1,5 @@
 #!/bin/bash
-# Sentinel Lineage Deployment & Test Script
+# Project SENTINEL Deployment & Test Script
 # Sets up SSH access to Arch Linux test PC, transfers files, runs test suite
 
 set -euo pipefail
@@ -100,7 +100,7 @@ REMOTE_EOF
 
 # ─── Transfer Files ───
 transfer_files() {
-    log "Transferring Sentinel Lineage project..."
+    log "Transferring Project SENTINEL project..."
 
     rsync -avz --delete \
         -e "ssh -i $SSH_KEY -p $ARCH_SSH_PORT" \
@@ -145,7 +145,7 @@ REMOTE_EOF
 
 # ─── Start Agent (Background) ───
 start_agent() {
-    log "Starting Sentinel Lineage Agent on remote (background)..."
+    log "Starting Project SENTINEL Agent on remote (background)..."
     log "Note: Agent requires root for eBPF. Run manually with sudo on target:"
     log "  sudo python3 agent/sentinel_lineage_agent.py"
     log "  python3 collector/sentinel_hub_lineage.py"

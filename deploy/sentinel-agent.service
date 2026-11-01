@@ -1,5 +1,5 @@
 [Unit]
-Description=Sentinel Lineage EDR — eBPF Agent (requires kernel access)
+Description=Project SENTINEL — eBPF Agent (requires kernel access)
 After=network-online.target sentinel-hub.service
 Wants=network-online.target
 BindsTo=sentinel-hub.service

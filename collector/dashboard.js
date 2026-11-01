@@ -1,4 +1,4 @@
-// Sentinel Lineage EDR — SOC Dashboard
+// Project SENTINEL — SOC Dashboard
 // Vanilla JS ES module. No build step. Canvas D3 graph, virtualized timeline.
 
 class SentinelDashboard {

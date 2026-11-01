@@ -1,5 +1,5 @@
 [Unit]
-Description=Sentinel Lineage EDR — Collector Hub
+Description=Project SENTINEL — Collector Hub
 Documentation=file:///opt/sentinel/README.md
 After=network-online.target
 Wants=network-online.target

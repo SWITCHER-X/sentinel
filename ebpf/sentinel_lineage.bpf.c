@@ -1,5 +1,5 @@
 /*
- * Sentinel Lineage eBPF Module
+ # Project SENTINEL — eBPF Module
  * Signature-based process lineage tracking with instant kill-switch
  * 
  * Design:

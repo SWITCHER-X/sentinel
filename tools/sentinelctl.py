@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Sentinel Lineage EDR - CLI Management Tool
+Project SENTINEL - CLI Management Tool
 Enterprise-grade command-line interface for managing Sentinel deployments.
 """
 
@@ -447,7 +447,7 @@ class SentinelCLI:
 
 def main():
     parser = argparse.ArgumentParser(
-        description=f'Sentinel Lineage EDR CLI v{VERSION}',
+        description=f'Project SENTINEL CLI v{VERSION}',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

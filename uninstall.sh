@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sentinel Lineage EDR — Uninstaller
+# Project SENTINEL — Uninstaller
 # Removes services, app dir, and (with --purge) config + state.
 set -euo pipefail
 
@@ -28,4 +28,4 @@ if id sentinel >/dev/null 2>&1; then
   echo "[✓] Removed system user: sentinel"
 fi
 
-echo "[✓] Sentinel Lineage EDR uninstalled."
+echo "[✓] Project SENTINEL uninstalled."

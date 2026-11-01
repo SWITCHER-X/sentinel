@@ -1,8 +1,8 @@
-# Sentinel Lineage EDR - Enterprise Deployment Guide
+# Project SENTINEL - Enterprise Deployment Guide
 
 ## Overview
 
-This guide covers production deployment of Sentinel Lineage EDR for enterprise environments, including high availability, compliance, security hardening, and operational procedures.
+This guide covers production deployment of Project SENTINEL for enterprise environments, including high availability, compliance, security hardening, and operational procedures.
 
 ---
 
@@ -55,7 +55,7 @@ sudo apt install sentinel-lineage-agent sentinel-lineage-collector
 # Add repository
 sudo tee /etc/yum.repos.d/sentinel.repo <<EOF
 [sentinel]
-name=Sentinel Lineage EDR
+name=Project SENTINEL
 baseurl=https://packages.sentinel-lineage.io/rhel/\$releasever/\$basearch
 enabled=1
 gpgcheck=1

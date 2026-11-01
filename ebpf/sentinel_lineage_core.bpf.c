@@ -1,5 +1,5 @@
 /*
- * Sentinel Lineage eBPF Module — CO-RE (Compile Once, Run Everywhere)
+ * Project SENTINEL eBPF Module — CO-RE (Compile Once, Run Everywhere)
  * Signature-based process lineage tracking with instant kill-switch
  * Uses vmlinux.h + libbpf CO-RE helpers — no kernel headers required at compile time
  */

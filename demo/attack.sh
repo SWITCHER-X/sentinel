@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# Sentinel Lineage EDR — Live Attack Demo (LOCALHOST-ONLY, SAFE)
+# Project SENTINEL — Live Attack Demo (LOCALHOST-ONLY, SAFE)
 #
 # Every command targets 127.0.0.1 — no external traffic, nothing leaves the box.
 # Run as root on the machine where the Sentinel agent is installed.

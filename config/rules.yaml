@@ -1,9 +1,9 @@
 version: "2.0"
 metadata:
-  description: "Sentinel Lineage EDR - Enterprise Detection Rules"
+  description: "Project SENTINEL - Enterprise Detection Rules"
   version: "2.1.0"
   updated: "2026-10-15"
-  author: "Sentinel Lineage Team"
+  author: "Project SENTINEL Team"
   mitre_version: "15.1"
 
 rules:

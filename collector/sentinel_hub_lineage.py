@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Sentinel Lineage Collector Hub - Enhanced with Lineage Tracking
+Project SENTINEL Collector Hub - Enhanced with Lineage Tracking
 Central telemetry collector with lineage tree visualization and SOC dashboard
 """
 
@@ -191,7 +191,7 @@ def send_telegram_alert(data):
     else:
         lid_str = str(_lid) if _lid is not None else "N/A"
     msg = (
-        f"🚨 *Sentinel Lineage Threat Neutralized*\n"
+        f"🚨 *Project SENTINEL Threat Neutralized*\n"
         f"*Node:* `{data.get('node_id', 'local-agent')}`\n"
         f"*Type:* `{data.get('type', 'EXEC_THREAT')}`\n"
         f"*Status:* `TERMINATED (SIGKILL)`\n"
@@ -730,5 +730,5 @@ def metrics():
 if __name__ == "__main__":
     load_lineage_db()
     _port = int(os.getenv("SENTINEL_PORT", "5000"))
-    print(f"[*] Sentinel Lineage Hub & SOC Web UI online at http://0.0.0.0:{_port}...")
+    print(f"[*] Project SENTINEL Hub & SOC Web UI online at http://0.0.0.0:{_port}...")
     app.run(host="0.0.0.0", port=_port)
