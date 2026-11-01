@@ -11,9 +11,10 @@ import yaml
 import hashlib
 import hmac
 import urllib.request
+import functools
 from collections import defaultdict, deque
 from threading import Lock
-from flask import Flask, request, jsonify, Response, send_file
+from flask import Flask, request, jsonify, Response, send_file, abort, redirect, make_response
 from flask_cors import CORS
 
 app = Flask(__name__)
@@ -47,8 +48,7 @@ else:
     print("│  Set SENTINEL_ADMIN_PASSWORD to pin credentials.   │", flush=True)
     print("└────────────────────────────────────────────────────┘", flush=True)
 
-PUBLIC_PATHS = ("/login", "/dashboard.js", "/d3.v7.min.js", "/health", "/metrics",
-                "/favicon.ico")
+PUBLIC_PATHS = ("/login", "/health", "/metrics", "/favicon.ico")
 OPEN_API = ("/api/v1/stats",)  # monitoring endpoints stay open (read-only counters)
 
 
@@ -309,13 +309,26 @@ def index():
     return send_file(DASHBOARD_FILE)
 
 
+# ─── Static files (explicit allowlist) ───
+DASHBOARD_STATIC = {
+    "dashboard.js",
+    "login.html",
+    "index.html",
+    "d3.v7.min.js",
+}
+
+@functools.lru_cache(maxsize=32)
+def _is_allowed_static(fname: str) -> bool:
+    return fname in DASHBOARD_STATIC
+
 @app.route("/<path:filename>")
 def static_files(filename):
     """Serve dashboard assets (dashboard.js etc.) same-origin."""
+    if not _is_allowed_static(filename):
+        abort(404)
     from flask import send_from_directory
     target = os.path.normpath(os.path.join(COLLECTOR_DIR, filename))
     if not target.startswith(COLLECTOR_DIR):
-        from flask import abort
         abort(403)
     return send_from_directory(COLLECTOR_DIR, filename)
 
@@ -453,7 +466,7 @@ def telemetry():
         global EVENT_SEQ
         EVENT_SEQ += 1
         data["_seq"] = EVENT_SEQ
-        TELEMETRY_LOGS.insert(0, data)
+        TELEMETRY_LOGS.appendleft(data)
 
         # Persist (SQLite) — best-effort, ingestion never fails on DB issues
         try:
