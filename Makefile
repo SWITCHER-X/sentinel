@@ -28,12 +28,12 @@ BPF_INC_ROOT := $(patsubst %/bpf,%,$(BPF_INC))
 BPF_CFLAGS_CORE := -target bpf -D__TARGET_ARCH_x86 -I./ebpf \
   $(if $(BPF_INC_ROOT),-I$(BPF_INC_ROOT),) -Wall -O2 -g
 
-.PHONY: all build build-legacy build-core verify test run-hub run-agent simulate live-test demo install-deps setup-kernel package clean help
+.PHONY: all build build-legacy build-core build-loader verify test kernel-test run-hub run-agent simulate live-test demo install-deps setup-kernel package clean help
 
 all: build-core test
 
 ## build — compile CO-RE eBPF program (works on any kernel with BTF)
-build: build-core
+build: build-loader
 
 ## build-legacy — compile legacy eBPF program (needs matching kernel headers)
 build-legacy: $(BPF_OBJ_LEGACY)
@@ -52,6 +52,13 @@ $(BPF_OBJ_CORE): $(BPF_SRC_CORE)
 	@echo "[*] Compiling CO-RE eBPF program (uses vmlinux.h)..."
 	$(CLANG) $(BPF_CFLAGS_CORE) -c $(BPF_SRC_CORE) -o $@
 	@echo "[✓] Built $@"
+
+## build-loader — compile the libbpf loader
+build-loader: build-core
+	@mkdir -p build
+	@echo "[*] Compiling libbpf loader..."
+	gcc -O2 -Wall -o build/sentinel-loader ebpf/sentinel_loader.c -lbpf
+	@echo "[✓] Built build/sentinel-loader"
 
 ## verify — syntax-check the CO-RE eBPF source
 verify: check-bpf-hdrs
@@ -77,6 +84,13 @@ test:
 	python3 tests/test_state_backend.py
 	python3 tests/test_rule_matching.py
 	python3 tests/test_agent_sync.py
+
+## kernel-test — load the CO-RE object on THIS kernel and check lineage, argv capture and blocking (needs root)
+kernel-test: build-core
+	@mkdir -p build
+	gcc -O1 -o build/kernel_selftest tests/kernel/selftest.c -lbpf
+	@mountpoint -q /sys/kernel/tracing || mount -t tracefs nodev /sys/kernel/tracing 2>/dev/null || true
+	sudo ./build/kernel_selftest $(BPF_OBJ_CORE)
 
 ## run-hub — run the collector + dashboard in the foreground
 run-hub:
@@ -108,12 +122,12 @@ install-deps:
 	@set -e; \
 	if command -v apt-get >/dev/null; then \
 	  sudo apt-get install -y python3 python3-venv python3-pip clang llvm libbpf-dev \
-	    linux-headers-$$(uname -r) bpfcc-tools python3-bcc; \
+	    linux-headers-$$(uname -r); \
 	elif command -v dnf >/dev/null; then \
-	  sudo dnf install -y python3 python3-pip clang llvm bcc-tools python3-bcc kernel-headers kernel-devel; \
+	  sudo dnf install -y python3 python3-pip clang llvm libbpf-devel kernel-headers kernel-devel; \
 	elif command -v pacman >/dev/null; then \
-	  sudo pacman -Sy --needed python python-pip clang llvm bcc python-bcc linux-headers; \
-	else echo "Unsupported distro — install clang, llvm, bcc, kernel headers manually."; fi
+	  sudo pacman -Sy --needed python python-pip clang llvm libbpf linux-headers; \
+	else echo "Unsupported distro — install clang, llvm, libbpf, kernel headers manually."; fi
 
 ## setup-kernel — load BPF infrastructure
 setup-kernel:
@@ -123,13 +137,13 @@ setup-kernel:
 	@echo "[✓] Kernel ready"
 
 ## package — release tarball in dist/
-package:
+package: build-loader
 	@mkdir -p dist
 	tar czf dist/$(PKG_NAME).tar.gz \
 	  --exclude='.venv' --exclude='build' --exclude='dist' --exclude='__pycache__' \
 	  --exclude='*.pyc' --exclude='lineage_db.json' --exclude='sentinel.db' --exclude='*.db' --exclude='.git' \
 	  --exclude='.env' \
-	  --transform 's,^\.,$(PKG_NAME),' .
+	  --transform 's,^\\.,$(PKG_NAME),' .
 	@echo "[✓] dist/$(PKG_NAME).tar.gz"
 
 ## demo — run the live attack demo (localhost-only, on the sensor box)

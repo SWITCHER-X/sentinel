@@ -302,6 +302,15 @@ static __always_inline void read_argv(char *out, const char *const *argv) {
         out[(off - 1) & (CMDLINE_LEN - 1)] = 0;   // drop trailing space
 }
 
+// Copy a short NUL-terminated tag; stops at the terminator so it never reads past the literal.
+static __always_inline void set_tag(char *dst, const char *src) {
+    #pragma unroll
+    for (int i = 0; i < 32; i++) {
+        dst[i] = src[i];
+        if (!src[i]) break;
+    }
+}
+
 static __always_inline void emit_blocked_alert(struct scratch_t *s, u64 lineage_id, u32 pid,
                                                 u32 ns_pid, u64 ts, const char *tag, u32 tag_len) {
     struct alert_event_t *a = &s->alert;
@@ -312,7 +321,7 @@ static __always_inline void emit_blocked_alert(struct scratch_t *s, u64 lineage_
     a->action = ACTION_KILL;
     bpf_get_current_comm(&a->comm, sizeof(a->comm));
     bpf_probe_read_kernel_str(a->binary_path, MAX_PATH_LEN, s->entry.binary_path);
-    __builtin_memcpy(a->matched_pattern, tag, 24);
+    set_tag(a->matched_pattern, tag);
     a->timestamp = ts;
     bpf_ringbuf_output(&alert_events, a, sizeof(*a), 0);
 }
@@ -541,7 +550,7 @@ static __always_inline void emit_simple_alert(struct scratch_t *s, struct lineag
     a->action = ACTION_ALERT;
     bpf_get_current_comm(&a->comm, sizeof(a->comm));
     a->binary_path[0] = 0;
-    __builtin_memcpy(a->matched_pattern, tag, 24);
+    set_tag(a->matched_pattern, tag);
     a->timestamp = bpf_ktime_get_ns();
 }
 

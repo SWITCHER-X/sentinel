@@ -407,47 +407,50 @@ class SentinelCLI:
 
     # ─── Testing ───
     def test_rule(self, args):
-        """Test a rule against a command"""
-        # Load rules
+        """Run a command line through the REAL agent rule engine (first match wins)."""
+        import types
+        import importlib.util
+        for name in ("bcc", "bcc.utils"):
+            sys.modules.setdefault(name, types.ModuleType(name))
+        sys.modules["bcc"].BPF = object
+        sys.modules["bcc.utils"].printb = print
+        os.environ["SENTINEL_CONFIG"] = self.rules_path
+        agent_path = Path(__file__).resolve().parent.parent / "agent" / "sentinel_lineage_agent.py"
+        if not agent_path.exists():
+            agent_path = Path("/opt/sentinel/agent/sentinel_lineage_agent.py")
+        spec = importlib.util.spec_from_file_location("sentinel_agent_cli", agent_path)
+        agent = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(agent)
+        agent.load_rules()
+
         with open(self.rules_path, 'r') as f:
-            data = yaml.safe_load(f)
+            mitre = {r.get("id"): r.get("mitre", []) for r in (yaml.safe_load(f) or {}).get("rules", [])}
 
-        from tests.test_lineage import match_rule, load_rules_from_yaml, LineageEntry, Rule
-        load_rules_from_yaml(yaml.dump(data))
+        first = args.test_command.split()[0]
+        entry = agent.LineageEntry(
+            lineage_id=0x1234, parent_lineage_id=0, pid=12345, ppid=12344, uid=1000, gid=1000,
+            ns_pid=12345, comm=os.path.basename(first), binary_path=first,
+            cmdline=args.test_command, exec_timestamp=time.time(), flags=0)
 
-        # Create test entry
-        entry = LineageEntry(
-            lineage_id=0x1234,
-            parent_lineage_id=0,
-            pid=12345,
-            ppid=12344,
-            uid=1000,
-            gid=1000,
-            ns_pid=12345,
-            comm=args.command.split()[0],
-            binary_path=args.command.split()[0],
-            cmdline=args.command,
-            exec_timestamp=time.time(),
-            flags=0
-        )
-
-        matched = False
-        for rule in rules:
-            if match_rule(entry, rule):
-                print(f"MATCHED: {rule.name} (ID: {rule.id})")
-                print(f"  Action: {rule.action}")
-                print(f"  Severity: {rule.severity}")
-                print(f"  MITRE: {rule.mitre if hasattr(rule, 'mitre') else 'N/A'}")
-                matched = True
-
-        if not matched:
+        hits = [r for r in agent.rules if agent.match_rule(entry, r)]
+        if not hits:
             print("No rule matched (benign)")
+            return
+        for i, rule in enumerate(hits):
+            tag = "MATCHED (decides the action)" if i == 0 else "also matches (shadowed)"
+            print(f"{tag}: {rule.name} (ID: {rule.id})")
+            print(f"  Action: {rule.action}")
+            print(f"  Severity: {rule.severity}")
+            print(f"  MITRE: {', '.join(mitre.get(rule.id, [])) or 'N/A'}")
 
     def run_tests(self, args):
-        """Run test suite"""
+        """Run every test file in tests/"""
         log("Running test suite...")
-        result = subprocess.run([sys.executable, 'tests/test_lineage.py'], cwd=Path(__file__).parent.parent)
-        sys.exit(result.returncode)
+        root = Path(__file__).parent.parent
+        rc = 0
+        for t in sorted((root / "tests").glob("test_*.py")):
+            rc |= subprocess.run([sys.executable, str(t)], cwd=root).returncode
+        sys.exit(rc)
 
 def main():
     parser = argparse.ArgumentParser(
@@ -523,7 +526,7 @@ Examples:
     test_parser = subparsers.add_parser('test', help='Testing')
     test_sub = test_parser.add_subparsers(dest='test_cmd')
     p = test_sub.add_parser('rule', help='Test rule against command')
-    p.add_argument('--command', required=True)
+    p.add_argument('--command', dest='test_command', required=True)
     test_sub.add_parser('suite', help='Run full test suite')
 
     args = parser.parse_args()

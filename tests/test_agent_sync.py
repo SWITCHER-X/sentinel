@@ -7,7 +7,7 @@ Covers the response structure the hub emits and how the agent verifies and appli
   * the agent rejects tampered, replayed and unknown-schema directives
   * block commands are applied in Enforce mode only
 
-Drives the real hub (Flask test client) and the real agent module (bcc stubbed).
+Drives the real hub (Flask test client) and the real agent module (loader stubbed).
 Run: python3 tests/test_agent_sync.py
 """
 import os
@@ -16,6 +16,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock
 
 REPO = Path(__file__).resolve().parent.parent
 _tmp = tempfile.mkdtemp(prefix="sentinel-sync-test-")
@@ -30,10 +31,17 @@ os.environ.update({
     "SENTINEL_CONFIG": str(REPO / "config" / "rules.yaml"),
 })
 
+# Stub bcc module so the agent can import (it no longer uses bcc, but imports may remain)
 _bcc = types.ModuleType("bcc"); _bcc.BPF = object
 _bcc_utils = types.ModuleType("bcc.utils"); _bcc_utils.printb = lambda *a, **k: None
 sys.modules.setdefault("bcc", _bcc)
 sys.modules.setdefault("bcc.utils", _bcc_utils)
+
+# Stub ctypes so path_key.so loading doesn't fail
+_ctypes = types.ModuleType("ctypes")
+_ctypes.CDLL = lambda *a, **k: None
+sys.modules.setdefault("ctypes", _ctypes)
+
 sys.path.insert(0, str(REPO / "collector"))
 sys.path.insert(0, str(REPO / "agent"))
 
@@ -96,7 +104,13 @@ class AgentApplies(unittest.TestCase):
         self.c = hub.app.test_client()
         self.killed = []
         A.os.kill = lambda pid, sig: self.killed.append(pid)
-        A.bpf = {"blocked_lineages": {}}
+        # Create a mock loader
+        self.mock_loader = MagicMock()
+        self.mock_loader.block = MagicMock()
+        self.mock_loader.unblock = MagicMock()
+        self.mock_loader.trust = MagicMock()
+        self.mock_loader.untrust = MagicMock()
+        A.loader = self.mock_loader
         A.blocked_lineages.clear()
         A.lineage_tree.clear()
         A._last_sync_time = 0.0
@@ -116,7 +130,8 @@ class AgentApplies(unittest.TestCase):
         self.c.post(f"/api/v1/lineage/{lid:#x}/block", headers=self.h)
         self.assertTrue(A.apply_directive(self._directive()))
         self.assertIn(lid, A.blocked_lineages)
-        self.assertIn(lid.to_bytes(8, "little"), A.bpf["blocked_lineages"])
+        # Verify loader.block was called with the correct lineage ID
+        self.mock_loader.block.assert_called_with(lid)
         self.assertIn(777, self.killed)
 
     def test_learn_mode_does_not_block(self):

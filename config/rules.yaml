@@ -1,765 +1,878 @@
-version: "2.0"
+version: '2.0'
 metadata:
-  description: "Project SENTINEL - Enterprise Detection Rules"
-  version: "2.1.0"
-  updated: "2026-10-15"
-  author: "Project SENTINEL Team"
-  mitre_version: "15.1"
-
+  description: Project SENTINEL - Enterprise Detection Rules
+  version: 2.1.0
+  updated: '2026-10-15'
+  author: Project SENTINEL Team
+  mitre_version: '15.1'
 rules:
-  # ════════════════════════════════════════════════════════════════
-  # MITRE ATT&CK: Initial Access (TA0001)
-  # ════════════════════════════════════════════════════════════════
-  - id: 1001
-    name: "Reverse Shell - nc -e"
-    pattern: "nc\\s+-e"
-    action: "KILL"
-    severity: "CRITICAL"
-    mitre: ["T1059.004"]
-    tags: ["reverse-shell", "initial-access"]
-    flags: 3
-
-  - id: 1002
-    name: "Reverse Shell - bash -i"
-    pattern: "bash\\s+-i"
-    action: "KILL"
-    severity: "CRITICAL"
-    mitre: ["T1059.004"]
-    tags: ["reverse-shell", "initial-access"]
-    flags: 3
-
-  - id: 1003
-    name: "Reverse Shell - /dev/tcp/"
-    pattern: "/dev/tcp/"
-    action: "KILL"
-    severity: "CRITICAL"
-    mitre: ["T1059.004"]
-    tags: ["reverse-shell", "initial-access"]
-    flags: 3
-
-  - id: 1004
-    name: "Reverse Shell - socat"
-    pattern: "socat.*TCP.*EXEC"
-    action: "KILL"
-    severity: "CRITICAL"
-    mitre: ["T1059.004"]
-    tags: ["reverse-shell", "initial-access"]
-    flags: 3
-
-  - id: 1005
-    name: "Reverse Shell - perl/python/ruby one-liners"
-    pattern: "(perl|python|ruby|php|nc|ncat|socat).*reverse.*shell|shell.*reverse"
-    action: "KILL"
-    severity: "CRITICAL"
-    mitre: ["T1059.004", "T1059.006", "T1059.007"]
-    tags: ["reverse-shell", "scripting"]
-    flags: 3
-
-  - id: 1006
-    name: "Reverse Shell - PowerShell"
-    binary_pattern: "(pwsh|powershell)"
-    pattern: "(Invoke-Expression|IEX|DownloadString|DownloadFile).*http"
-    action: "KILL"
-    severity: "CRITICAL"
-    mitre: ["T1059.001"]
-    tags: ["reverse-shell", "powershell"]
-    flags: 5
-
-  - id: 1007
-    name: "Webshell - PHP/ASP/JSP"
-    binary_pattern: "(php|php-fpm|httpd|nginx|apache2|tomcat|jetty)"
-    pattern: "(eval|exec|system|shell_exec|passthru|proc_open|popen).*\\$_"
-    action: "KILL"
-    severity: "CRITICAL"
-    mitre: ["T1505.003"]
-    tags: ["webshell", "web-application"]
-    flags: 5
-
-  # ════════════════════════════════════════════════════════════════
-  # MITRE ATT&CK: Execution (TA0002) - Pipe Download & Execute
-  # ════════════════════════════════════════════════════════════════
-  - id: 2001
-    name: "Pipe Download Execute - curl|bash"
-    pattern: "(curl|wget|fetch|aria2c).*\\|.*(bash|sh|zsh|python|perl|python3|node|ruby)"
-    action: "KILL"
-    severity: "CRITICAL"
-    mitre: ["T1059.004", "T1105"]
-    tags: ["pipe-exec", "lolbas", "fileless"]
-    flags: 3
-
-  - id: 2002
-    name: "Pipe Download Execute - curl -s|sh"
-    pattern: "curl\\s+(-s|--silent).*\\|.*sh"
-    action: "KILL"
-    severity: "CRITICAL"
-    mitre: ["T1059.004", "T1105"]
-    tags: ["pipe-exec", "silent-download"]
-    flags: 3
-
-  - id: 2003
-    name: "Process Substitution Execution"
-    pattern: "(bash|sh|zsh)\\s+<(curl|wget).*http"
-    action: "KILL"
-    severity: "CRITICAL"
-    mitre: ["T1059.004"]
-    tags: ["process-substitution", "fileless"]
-    flags: 3
-
-  - id: 2004
-    name: "Base64 Encoded Payload Execution"
-    pattern: "(base64|openssl).*(-d|-decode).*\\|.*(bash|sh|python|perl)"
-    action: "KILL"
-    severity: "CRITICAL"
-    mitre: ["T1027", "T1059.004"]
-    tags: ["encoded-payload", "obfuscation"]
-    flags: 3
-
-  - id: 2005
-    name: "Python One-Liner Download Execute"
-    pattern: "python.*(-c|--command).*urllib|requests.*http.*exec|eval"
-    action: "KILL"
-    severity: "CRITICAL"
-    mitre: ["T1059.006", "T1105"]
-    tags: ["python", "fileless"]
-    flags: 3
-
-  - id: 2006
-    name: "Node.js One-Liner Download Execute"
-    binary_pattern: "(node|nodejs)"
-    pattern: "(require\\(.*http|fetch|axios).*eval|Function\\(.*\\)"
-    action: "KILL"
-    severity: "CRITICAL"
-    mitre: ["T1059.007", "T1105"]
-    tags: ["nodejs", "fileless"]
-    flags: 5
-
-  # ════════════════════════════════════════════════════════════════
-  # MITRE ATT&CK: Credential Access (TA0006)
-  # ════════════════════════════════════════════════════════════════
-  - id: 3001
-    name: "Shadow File Access"
-    pattern: "(cat|cp|dd|strings|grep|awk|sed|cut).*shadow"
-    action: "KILL"
-    severity: "CRITICAL"
-    mitre: ["T1003.008"]
-    tags: ["credential-access", "etc-shadow"]
-    flags: 3
-
-  - id: 3002
-    name: "Passwd File Access"
-    pattern: "(cat|cp|dd|strings|grep|awk|sed|cut).*passwd"
-    action: "ALERT"
-    severity: "HIGH"
-    mitre: ["T1003.008"]
-    tags: ["credential-access", "etc-passwd"]
-    flags: 3
-
-  - id: 3003
-    name: "SSH Private Key Access"
-    pattern: "\\.ssh/(id_rsa|id_ed25519|id_ecdsa|id_dsa|authorized_keys|known_hosts)"
-    action: "ALERT"
-    severity: "HIGH"
-    mitre: ["T1555.004"]
-    tags: ["credential-access", "ssh-keys"]
-    flags: 3
-
-  - id: 3004
-    name: "Sudoers File Access"
-    pattern: "(cat|cp|dd|visudo|grep|awk|sed).*sudoers"
-    action: "ALERT"
-    severity: "HIGH"
-    mitre: ["T1548.003"]
-    tags: ["privilege-escalation", "sudoers"]
-    flags: 3
-
-  - id: 3005
-    name: "Kerberos Credential Access"
-    pattern: "(klist|kinit|ktutil|kdestroy).*(-k|-t|keytab)"
-    action: "ALERT"
-    severity: "HIGH"
-    mitre: ["T1558.003"]
-    tags: ["kerberos", "credential-access"]
-    flags: 3
-
-  - id: 3006
-    name: "Browser Credential Dumping"
-    binary_pattern: "(chrome|firefox|chromium|brave|edge)"
-    pattern: "(Login Data|key4.db|logins.json|cookies.sqlite)"
-    action: "ALERT"
-    severity: "HIGH"
-    mitre: ["T1555.003"]
-    tags: ["credential-access", "browser"]
-    flags: 5
-
-  - id: 3007
-    name: "AWS/GCP/Azure CLI Credential Access"
-    binary_pattern: "(aws|gcloud|az|kubectl)"
-    pattern: "(configure|auth|login|get-credentials).*--profile|--key|--secret"
-    action: "ALERT"
-    severity: "HIGH"
-    mitre: ["T1528", "T1552"]
-    tags: ["cloud-credentials"]
-    flags: 5
-
-  # ════════════════════════════════════════════════════════════════
-  # MITRE ATT&CK: Privilege Escalation (TA0004)
-  # ════════════════════════════════════════════════════════════════
-  - id: 4001
-    name: "Sudo/SU Abuse"
-    binary_pattern: "(sudo|su|doas|pkexec)"
-    pattern: "(sudo|su|doas|pkexec).*(-i|-s|bash|sh|/bin/)"
-    action: "ALERT"
-    severity: "MEDIUM"
-    mitre: ["T1548.003"]
-    tags: ["privilege-escalation", "sudo"]
-    flags: 5
-
-  - id: 4002
-    name: "SUID/SGID Binary Execution"
-    binary_pattern: "(find|bash|sh|python|perl|ruby|vim|nano|awk|sed|cp|mv)"
-    pattern: ""
-    action: "ALERT"
-    severity: "MEDIUM"
-    mitre: ["T1548.001"]
-    tags: ["privilege-escalation", "suid"]
-    flags: 4
-    uid_min: 0
-    uid_max: 0
-
-  - id: 4003
-    name: "LD_PRELOAD Hijack Attempt"
-    pattern: "LD_PRELOAD="
-    action: "ALERT"
-    severity: "HIGH"
-    mitre: ["T1574.006"]
-    tags: ["privilege-escalation", "library-injection"]
-    flags: 3
-
-  - id: 4004
-    name: "LD_LIBRARY_PATH Hijack"
-    pattern: "LD_LIBRARY_PATH="
-    action: "ALERT"
-    severity: "MEDIUM"
-    mitre: ["T1574.006"]
-    tags: ["privilege-escalation", "library-injection"]
-    flags: 3
-
-  - id: 4005
-    name: "Cron/Service Persistence"
-    binary_pattern: "(crontab|systemctl|service|update-rc.d|chkconfig|systemd-run|at|batch)"
-    pattern: ""
-    action: "ALERT"
-    severity: "MEDIUM"
-    mitre: ["T1053.003", "T1543.002"]
-    tags: ["persistence", "cron", "systemd"]
-    flags: 4
-
-  - id: 4006
-    name: "Kernel Module Load"
-    binary_pattern: "(insmod|modprobe|kmod)"
-    pattern: ""
-    action: "ALERT"
-    severity: "HIGH"
-    mitre: ["T1547.006"]
-    tags: ["kernel", "persistence"]
-    flags: 4
-
-  - id: 4007
-    name: "Capabilities Abuse"
-    binary_pattern: "(getcap|setcap|capsh)"
-    pattern: ""
-    action: "ALERT"
-    severity: "MEDIUM"
-    mitre: ["T1548.002"]
-    tags: ["linux-capabilities"]
-    flags: 4
-
-  # ════════════════════════════════════════════════════════════════
-  # MITRE ATT&CK: Defense Evasion (TA0005)
-  # ════════════════════════════════════════════════════════════════
-  - id: 5001
-    name: "Log Tampering - history/wtmp/utmp"
-    pattern: "(history|last|lastb|utmpdump|wtmp|btmp).*(-c|-d|--clear|>\\s*/dev/null)"
-    action: "KILL"
-    severity: "CRITICAL"
-    mitre: ["T1070.003"]
-    tags: ["defense-evasion", "log-tampering"]
-    flags: 3
-
-  - id: 5002
-    name: "Audit Log Tampering"
-    binary_pattern: "(auditctl|ausearch|aureport|audispd)"
-    pattern: ""
-    action: "ALERT"
-    severity: "HIGH"
-    mitre: ["T1562.002"]
-    tags: ["defense-evasion", "audit"]
-    flags: 4
-
-  - id: 5003
-    name: "Timestamp Modification"
-    binary_pattern: "touch"
-    pattern: "touch.*(-r|--reference|-t|-d).*"
-    action: "ALERT"
-    severity: "MEDIUM"
-    mitre: ["T1070.006"]
-    tags: ["defense-evasion", "timestomp"]
-    flags: 3
-
-  - id: 5004
-    name: "Binary Padding/Overwrite"
-    binary_pattern: "(dd|cp|cat|tee|printf|echo)"
-    pattern: "(if=|of=).*\\.(so|exe|bin|elf)"
-    action: "ALERT"
-    severity: "HIGH"
-    mitre: ["T1027.001"]
-    tags: ["defense-evasion", "binary-padding"]
-    flags: 3
-
-  - id: 5005
-    name: "Process Injection via ptrace"
-    pattern: "ptrace.*PTRACE_ATTACH|gdb.*-p"
-    action: "ALERT"
-    severity: "HIGH"
-    mitre: ["T1055.008"]
-    tags: ["process-injection", "ptrace"]
-    flags: 3
-
-  - id: 5006
-    name: "Rootkit Indicators"
-    binary_pattern: "(ls|ps|netstat|ss|lsof|find|which|top|htop|iftop|nethogs)"
-    pattern: ""
-    action: "ALERT"
-    severity: "MEDIUM"
-    mitre: ["T1014"]
-    tags: ["rootkit", "anti-forensics"]
-    flags: 4
-
-  # ════════════════════════════════════════════════════════════════
-  # MITRE ATT&CK: Discovery (TA0007)
-  # ════════════════════════════════════════════════════════════════
-  - id: 6001
-    name: "Network Recon - Port Scanning Tools"
-    binary_pattern: "(nmap|masscan|zmap|rustscan|naabu|unicornscan)"
-    pattern: ""
-    action: "ALERT"
-    severity: "MEDIUM"
-    mitre: ["T1046"]
-    tags: ["discovery", "port-scan"]
-    flags: 4
-
-  - id: 6002
-    name: "System Info Discovery"
-    binary_pattern: "(uname|lscpu|lsmem|lsblk|lspci|lsusb|dmidecode|hwprobe)"
-    pattern: ""
-    action: "ALERT"
-    severity: "LOW"
-    mitre: ["T1082"]
-    tags: ["discovery", "system-info"]
-    flags: 4
-
-  - id: 6003
-    name: "Container/K8s Discovery"
-    binary_pattern: "(kubectl|docker|ctr|crictl|nerdctl|podman|crictl)"
-    pattern: "(get|list|describe).*(-A|--all-namespaces|pods|nodes|services|secrets)"
-    action: "ALERT"
-    severity: "MEDIUM"
-    mitre: ["T1613"]
-    tags: ["discovery", "kubernetes", "container"]
-    flags: 5
-
-  - id: 6004
-    name: "Cloud Metadata Service Access"
-    pattern: "(169.254.169.254|metadata.google.internal|metadata.azure.com).*\\/latest\\/meta-data|\\/computeMetadata\\/v1"
-    action: "KILL"
-    severity: "CRITICAL"
-    mitre: ["T1590.005"]
-    tags: ["cloud", "metadata-service", "credential-access"]
-    flags: 3
-
-  - id: 6005
-    name: "Process Enumeration"
-    binary_pattern: "(ps|pstree|pgrep|pidof|top|htop|btop|glances)"
-    pattern: ""
-    action: "ALERT"
-    severity: "LOW"
-    mitre: ["T1057"]
-    tags: ["discovery", "process-enum"]
-    flags: 4
-
-  # ════════════════════════════════════════════════════════════════
-  # MITRE ATT&CK: Lateral Movement (TA0008)
-  # ════════════════════════════════════════════════════════════════
-  - id: 7001
-    name: "SSH Lateral Movement"
-    binary_pattern: "(ssh|scp|sftp|rsync)"
-    pattern: "(-i|-o.*IdentityFile|-o.*ProxyJump|-o.*ProxyCommand).*"
-    action: "ALERT"
-    severity: "MEDIUM"
-    mitre: ["T1021.004"]
-    tags: ["lateral-movement", "ssh"]
-    flags: 3
-
-  - id: 7002
-    name: "Pass-the-Hash/Ticket Tools"
-    binary_pattern: "(psexec|wmiexec|smbexec|atexec|dcomexec|pth|winexe|crackmapexec|impacket)"
-    pattern: ""
-    action: "KILL"
-    severity: "CRITICAL"
-    mitre: ["T1550.002", "T1550.003"]
-    tags: ["lateral-movement", "pass-the-hash"]
-    flags: 4
-
-  - id: 7003
-    name: "Remote Service Exploitation"
-    binary_pattern: "(msfconsole|msfvenom|searchsploit|exploitdb)"
-    pattern: ""
-    action: "KILL"
-    severity: "CRITICAL"
-    mitre: ["T1210"]
-    tags: ["exploitation", "metasploit"]
-    flags: 4
-
-  # ════════════════════════════════════════════════════════════════
-  # MITRE ATT&CK: Collection (TA0009)
-  # ════════════════════════════════════════════════════════════════
-  - id: 8001
-    name: "Archive Collection"
-    binary_pattern: "(tar|zip|gzip|bzip2|xz|7z|rar)"
-    pattern: "(-c|-a|--create).*(-z|-j|-J).*\\.(tar|tgz|tbz2|txz|zip)"
-    action: "ALERT"
-    severity: "MEDIUM"
-    mitre: ["T1560.001"]
-    tags: ["collection", "archiving"]
-    flags: 3
-
-  - id: 8002
-    name: "Email Collection"
-    binary_pattern: "(mail|mailx|mutt|alpine|thunderbird|evolution)"
-    pattern: ""
-    action: "ALERT"
-    severity: "MEDIUM"
-    mitre: ["T1114"]
-    tags: ["collection", "email"]
-    flags: 4
-
-  # ════════════════════════════════════════════════════════════════
-  # MITRE ATT&CK: Command & Control (TA0011)
-  # ════════════════════════════════════════════════════════════════
-  - id: 9001
-    name: "C2 - Known Malware Binaries"
-    binary_pattern: "(cobaltstrike|beacon|metasploit|meterpreter|sliver|havoc|bruteratel|poshc2|empire|koadic|pupy|merlin|trevorc2|dnscat2|iodine|chisel|ligolo|nps|frp|ngrok|cloudflared)"
-    pattern: ""
-    action: "KILL"
-    severity: "CRITICAL"
-    mitre: ["T1219", "T1573"]
-    tags: ["c2", "remote-access-tool"]
-    flags: 4
-
-  - id: 9002
-    name: "C2 - Tunneling/Proxy Tools"
-    binary_pattern: "(ssh|socat|nc|ncat|proxychains|torsocks|redsocks|stunnel|openvpn|wireguard|tailscale|zerotier)"
-    pattern: "(-R|-L|-D|-w|--proxy|--tunnel).*[0-9]+"
-    action: "ALERT"
-    severity: "HIGH"
-    mitre: ["T1572", "T1090"]
-    tags: ["c2", "tunneling", "proxy"]
-    flags: 3
-
-  - id: 9003
-    name: "DNS Tunneling"
-    pattern: "(dig|nslookup|host|drill).*@.*\\.(tk|ml|ga|cf|gq|xyz|top|club|online|site|space|website|pw|cc|ws|info|biz|name|mobi|pro|tel|asia|me|io|co|tv|cc|sh|ac|io|ai|gg|nu|vc|sc|vg|gd|ms|je|im|io|sh|ac|io|gg)"
-    action: "ALERT"
-    severity: "HIGH"
-    mitre: ["T1572"]
-    tags: ["c2", "dns-tunneling"]
-    flags: 3
-
-  - id: 9004
-    name: "Outbound to Blocked Country"
-    pattern: ""
-    action: "BLOCK"
-    severity: "HIGH"
-    mitre: ["T1090.003"]
-    tags: ["geo-block", "network"]
-    flags: 32
-
-  - id: 9005
-    name: "Suspicious High Port Connections"
-    pattern: ""
-    action: "ALERT"
-    severity: "MEDIUM"
-    mitre: ["T1090"]
-    tags: ["network", "high-ports"]
-    flags: 32
-
-  # ════════════════════════════════════════════════════════════════
-  # MITRE ATT&CK: Exfiltration (TA0010)
-  # ════════════════════════════════════════════════════════════════
-  - id: 10001
-    name: "Large Data Transfer - scp/rsync"
-    binary_pattern: "(scp|rsync|sftp|scp|ftp|s3cmd|aws|gsutil|azcopy|rclone)"
-    pattern: ""
-    action: "ALERT"
-    severity: "MEDIUM"
-    mitre: ["T1048", "T1567"]
-    tags: ["exfiltration", "data-transfer"]
-    flags: 4
-
-  # ════════════════════════════════════════════════════════════════
-  # MITRE ATT&CK: Impact (TA0040)
-  # ════════════════════════════════════════════════════════════════
-  - id: 11001
-    name: "Ransomware - File Encryption"
-    binary_pattern: "(gpg|openssl|ccrypt|age|sops|7z|rar|zip|tar)"
-    pattern: "(-e|-c|--encrypt|--password|-p)"
-    action: "KILL"
-    severity: "CRITICAL"
-    mitre: ["T1486"]
-    tags: ["ransomware", "encryption", "impact"]
-    flags: 7
-
-  - id: 11002
-    name: "Disk Wiping"
-    binary_pattern: "(dd|shred|wipe|scrub|badblocks|mkfs|fdisk|parted|sfdisk)"
-    pattern: "(of=|if=).*\\/(sd|hd|vd|nvme|mmcblk|loop|dm-|md|zram)"
-    action: "KILL"
-    severity: "CRITICAL"
-    mitre: ["T1561.001", "T1561.002"]
-    tags: ["impact", "disk-wipe", "destruction"]
-    flags: 3
-
-  - id: 11003
-    name: "Service Stop/Disable"
-    binary_pattern: "(systemctl|service|chkconfig|update-rc.d|rc-update|sv|svcadm)"
-    pattern: "(stop|disable|mask|kill).*"
-    action: "ALERT"
-    severity: "HIGH"
-    mitre: ["T1489"]
-    tags: ["impact", "service-stop"]
-    flags: 4
-
-  # ════════════════════════════════════════════════════════════════
-  # Container Escape & Kubernetes (TA0004, TA0008)
-  # ════════════════════════════════════════════════════════════════
-  - id: 12001
-    name: "Container Escape - nsenter"
-    pattern: "nsenter.*-t\\s+1\\s+-m\\s+-u\\s+-n"
-    action: "KILL"
-    severity: "CRITICAL"
-    mitre: ["T1611"]
-    tags: ["container-escape", "nsenter"]
-    flags: 3
-
-  - id: 12002
-    name: "Container Escape - Privileged Pod"
-    binary_pattern: "(kubectl|docker|podman|ctr|nerdctl|crictl)"
-    pattern: "(--privileged|hostPID|hostNetwork|hostIPC|cap-add=SYS_ADMIN|cap-add=CAP_DAC_OVERRIDE|securityContext.privileged)"
-    action: "ALERT"
-    severity: "HIGH"
-    mitre: ["T1611"]
-    tags: ["container-escape", "kubernetes", "privileged"]
-    flags: 5
-
-  - id: 12003
-    name: "Container Escape - CVE-2022-0811 (CRI-O)"
-    binary_pattern: "(crictl|crio|runc|containerd)"
-    pattern: ""
-    action: "ALERT"
-    severity: "CRITICAL"
-    mitre: ["T1611"]
-    tags: ["container-escape", "cve-2022-0811"]
-    flags: 4
-
-  - id: 12004
-    name: "Kubernetes RBAC Abuse"
-    binary_pattern: "kubectl"
-    pattern: "(create|patch|update).*rolebinding|clusterrolebinding|role|clusterrole.*--user|--group|--serviceaccount"
-    action: "ALERT"
-    severity: "HIGH"
-    mitre: ["T1098"]
-    tags: ["kubernetes", "rbac", "privilege-escalation"]
-    flags: 3
-
-  - id: 12005
-    name: "Container Drift - Unexpected Process"
-    lineage_id: 0
-    action: "ALERT"
-    severity: "MEDIUM"
-    mitre: ["T1611"]
-    tags: ["container-drift", "anomaly"]
-    flags: 8
-
-  # ════════════════════════════════════════════════════════════════
-  # Crypto Mining
-  # ════════════════════════════════════════════════════════════════
-  - id: 13001
-    name: "Crypto Miner Binary"
-    binary_pattern: "(xmrig|cpuminer|minerd|ccminer|ethminer|sgminer|bfgminer|t-rex|teamredminer|nbminer|lolminer|gminer|bmminer|claymore|phoenixminer|nanominer|wildrig|rigel|verthashminer|kawpowminer|kawpowd|randomx|monero|xmrig|xmrig-nvidia|xmrig-amd)"
-    pattern: ""
-    action: "KILL"
-    severity: "HIGH"
-    mitre: ["T1496"]
-    tags: ["cryptomining", "resource-hijacking"]
-    flags: 4
-
-  - id: 13002
-    name: "Crypto Mining Pool Connection"
-    pattern: "(stratum|xmr|eth|etc|btc|ltc|doge|xdag|beam|grin|ckb|rvn|cfx|erg|flux|ktn|rx|rx2|rx3|rx4|rx5|rx6|rx7|rx8|rx9|rx0).*\\.(com|net|org|io|xyz|top|me|online|site|space|pool|mining)"
-    action: "ALERT"
-    severity: "HIGH"
-    mitre: ["T1496"]
-    tags: ["cryptomining", "network"]
-    flags: 32
-
-  - id: 13003
-    name: "High CPU Sustained (Anomaly)"
-    lineage_id: 0
-    action: "ALERT"
-    severity: "MEDIUM"
-    mitre: ["T1496"]
-    tags: ["cryptomining", "anomaly", "resource"]
-    flags: 8
-
-  # ════════════════════════════════════════════════════════════════
-  # Supply Chain & Software Integrity
-  # ════════════════════════════════════════════════════════════════
-  - id: 14001
-    name: "Package Manager Abuse - Unexpected Install"
-    binary_pattern: "(apt|apt-get|yum|dnf|pacman|zypper|apk|emerge|pip|npm|yarn|pnpm|gem|cargo|go|composer|maven|gradle|nuget)"
-    pattern: "(install|add|get).*(-y|--yes|--assume-yes|--force|--allow-unauthenticated)"
-    action: "ALERT"
-    severity: "MEDIUM"
-    mitre: ["T1195.002"]
-    tags: ["supply-chain", "package-manager"]
-    flags: 5
-
-  - id: 14002
-    name: "Unsigned/Modified Binary Execution"
-    pattern: ""
-    action: "ALERT"
-    severity: "HIGH"
-    mitre: ["T1553.002"]
-    tags: ["integrity", "unsigned-binary"]
-    flags: 0
-
-  # ════════════════════════════════════════════════════════════════
-  # Compliance & Audit (PCI-DSS, HIPAA, SOC2, GDPR)
-  # ════════════════════════════════════════════════════════════════
-  - id: 15001
-    name: "PCI-DSS: PAN Data Access"
-    pattern: "[0-9]{13,19}|[0-9]{4}[-\\s]?[0-9]{4}[-\\s]?[0-9]{4}[-\\s]?[0-9]{4}"
-    action: "ALERT"
-    severity: "HIGH"
-    mitre: []
-    tags: ["compliance", "pci-dss", "pan"]
-    flags: 3
-
-  - id: 15002
-    name: "HIPAA: PHI Access Patterns"
-    pattern: "(ssn|social.security|medical|health|patient|diagnosis|prescription|icd|hipaa|phi|pii)"
-    action: "ALERT"
-    severity: "HIGH"
-    mitre: []
-    tags: ["compliance", "hipaa", "phi"]
-    flags: 3
-
-  - id: 15003
-    name: "GDPR: Personal Data Access"
-    pattern: "(gdpr|personal.data|pii|email|address|phone|ip.address|cookie|consent)"
-    action: "ALERT"
-    severity: "MEDIUM"
-    mitre: []
-    tags: ["compliance", "gdpr", "pii"]
-    flags: 3
-
-  - id: 15004
-    name: "Database Dump/Export"
-    binary_pattern: "(mysqldump|pg_dump|mongodump|redis-cli|sqlite3|sqlcmd|bcp|expdp|impdp)"
-    pattern: ""
-    action: "ALERT"
-    severity: "HIGH"
-    mitre: ["T1005"]
-    tags: ["compliance", "data-exfiltration", "database"]
-    flags: 4
-
-  # ════════════════════════════════════════════════════════════════
-  # File Integrity Monitoring (FIM) - Critical Paths
-  # ════════════════════════════════════════════════════════════════
-  - id: 16001
-    name: "FIM: /etc/passwd Modification"
-    pattern: "/etc/passwd"
-    action: "ALERT"
-    severity: "CRITICAL"
-    mitre: ["T1003.008"]
-    tags: ["fim", "critical-file", "etc-passwd"]
-    flags: 64
-
-  - id: 16002
-    name: "FIM: /etc/shadow Modification"
-    pattern: "/etc/shadow"
-    action: "KILL"
-    severity: "CRITICAL"
-    mitre: ["T1003.008"]
-    tags: ["fim", "critical-file", "etc-shadow"]
-    flags: 64
-
-  - id: 16003
-    name: "FIM: /etc/sudoers Modification"
-    pattern: "/etc/sudoers"
-    action: "ALERT"
-    severity: "CRITICAL"
-    mitre: ["T1548.003"]
-    tags: ["fim", "critical-file", "sudoers"]
-    flags: 64
-
-  - id: 16004
-    name: "FIM: SSH Config Modification"
-    pattern: "/etc/ssh/sshd_config|/etc/ssh/ssh_config|~/.ssh/authorized_keys|~/.ssh/config"
-    action: "ALERT"
-    severity: "HIGH"
-    mitre: ["T1098.004"]
-    tags: ["fim", "ssh", "persistence"]
-    flags: 64
-
-  - id: 16005
-    name: "FIM: Systemd Service Modification"
-    pattern: "/etc/systemd/system/|/lib/systemd/system/|/usr/lib/systemd/system/"
-    action: "ALERT"
-    severity: "HIGH"
-    mitre: ["T1543.002"]
-    tags: ["fim", "systemd", "persistence"]
-    flags: 64
-
-  - id: 16006
-    name: "FIM: Cron Modification"
-    pattern: "/etc/cron|/var/spool/cron|/etc/anacrontab"
-    action: "ALERT"
-    severity: "HIGH"
-    mitre: ["T1053.003"]
-    tags: ["fim", "cron", "persistence"]
-    flags: 64
-
-  - id: 16007
-    name: "FIM: Kernel Module Config"
-    pattern: "/etc/modprobe.d/|/etc/modules-load.d/|/etc/depmod.d/"
-    action: "ALERT"
-    severity: "HIGH"
-    mitre: ["T1547.006"]
-    tags: ["fim", "kernel", "persistence"]
-    flags: 64
-
-  - id: 16008
-    name: "FIM: Bootloader Config"
-    pattern: "/boot/grub|/boot/efi|/etc/default/grub"
-    action: "ALERT"
-    severity: "CRITICAL"
-    mitre: ["T1542.003"]
-    tags: ["fim", "bootloader", "persistence"]
-    flags: 64
-
-  # ════════════════════════════════════════════════════════════════
-  # Dynamic Rules (Populated at Runtime)
-  # ════════════════════════════════════════════════════════════════
-# trusted_lineages: []      # Auto-populated when lineage trusted via API
-# blocked_lineages: []      # Auto-populated when lineage blocked
+- id: 1001
+  name: Reverse Shell - nc -e
+  pattern: nc\s+-e
+  action: KILL
+  severity: CRITICAL
+  mitre:
+  - T1059.004
+  tags:
+  - reverse-shell
+  - initial-access
+  flags: 3
+- id: 1002
+  name: Reverse Shell - bash -i
+  pattern: bash\s+-i
+  action: KILL
+  severity: CRITICAL
+  mitre:
+  - T1059.004
+  tags:
+  - reverse-shell
+  - initial-access
+  flags: 3
+- id: 1003
+  name: Reverse Shell - /dev/tcp/
+  pattern: /dev/tcp/
+  action: KILL
+  severity: CRITICAL
+  mitre:
+  - T1059.004
+  tags:
+  - reverse-shell
+  - initial-access
+  flags: 3
+- id: 1004
+  name: Reverse Shell - socat
+  pattern: socat.*TCP.*EXEC
+  action: KILL
+  severity: CRITICAL
+  mitre:
+  - T1059.004
+  tags:
+  - reverse-shell
+  - initial-access
+  flags: 3
+- id: 1005
+  name: Reverse Shell - perl/python/ruby one-liners
+  pattern: (perl|python|ruby|php|nc|ncat|socat).*reverse.*shell|shell.*reverse
+  action: KILL
+  severity: CRITICAL
+  mitre:
+  - T1059.004
+  - T1059.006
+  - T1059.007
+  tags:
+  - reverse-shell
+  - scripting
+  flags: 3
+- id: 1006
+  name: Reverse Shell - PowerShell
+  binary_pattern: (pwsh|powershell)
+  pattern: (Invoke-Expression|IEX|DownloadString|DownloadFile).*http
+  action: KILL
+  severity: CRITICAL
+  mitre:
+  - T1059.001
+  tags:
+  - reverse-shell
+  - powershell
+  flags: 5
+- id: 1007
+  name: Webshell - PHP/ASP/JSP
+  binary_pattern: (php|php-fpm|httpd|nginx|apache2|tomcat|jetty)
+  pattern: (eval|exec|system|shell_exec|passthru|proc_open|popen).*\$_
+  action: KILL
+  severity: CRITICAL
+  mitre:
+  - T1505.003
+  tags:
+  - webshell
+  - web-application
+  flags: 5
+- id: 2001
+  name: Pipe Download Execute - curl|bash
+  pattern: (curl|wget|fetch|aria2c).*\|.*(bash|sh|zsh|python|perl|python3|node|ruby)
+  action: KILL
+  severity: CRITICAL
+  mitre:
+  - T1059.004
+  - T1105
+  tags:
+  - pipe-exec
+  - lolbas
+  - fileless
+  flags: 3
+- id: 2002
+  name: Pipe Download Execute - curl -s|sh
+  pattern: curl\s+(-s|--silent).*\|.*sh
+  action: KILL
+  severity: CRITICAL
+  mitre:
+  - T1059.004
+  - T1105
+  tags:
+  - pipe-exec
+  - silent-download
+  flags: 3
+- id: 2003
+  name: Process Substitution Execution
+  pattern: (bash|sh|zsh)\s+<(curl|wget).*http
+  action: KILL
+  severity: CRITICAL
+  mitre:
+  - T1059.004
+  tags:
+  - process-substitution
+  - fileless
+  flags: 3
+- id: 2004
+  name: Base64 Encoded Payload Execution
+  pattern: (base64|openssl).*(-d|-decode).*\|.*(bash|sh|python|perl)
+  action: KILL
+  severity: CRITICAL
+  mitre:
+  - T1027
+  - T1059.004
+  tags:
+  - encoded-payload
+  - obfuscation
+  flags: 3
+- id: 2005
+  name: Python One-Liner Download Execute
+  pattern: python.*(-c|--command).*urllib|requests.*http.*exec|eval
+  action: KILL
+  severity: CRITICAL
+  mitre:
+  - T1059.006
+  - T1105
+  tags:
+  - python
+  - fileless
+  flags: 3
+- id: 2006
+  name: Node.js One-Liner Download Execute
+  binary_pattern: (node|nodejs)
+  pattern: (require\(.*http|fetch|axios).*eval|Function\(.*\)
+  action: KILL
+  severity: CRITICAL
+  mitre:
+  - T1059.007
+  - T1105
+  tags:
+  - nodejs
+  - fileless
+  flags: 5
+- id: 3001
+  name: Shadow File Access
+  pattern: (cat|cp|dd|strings|grep|awk|sed|cut).*shadow
+  action: KILL
+  severity: CRITICAL
+  mitre:
+  - T1003.008
+  tags:
+  - credential-access
+  - etc-shadow
+  flags: 3
+- id: 3002
+  name: Passwd File Access
+  pattern: (cat|cp|dd|strings|grep|awk|sed|cut).*passwd
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1003.008
+  tags:
+  - credential-access
+  - etc-passwd
+  flags: 3
+- id: 3003
+  name: SSH Private Key Access
+  pattern: \.ssh/(id_rsa|id_ed25519|id_ecdsa|id_dsa|authorized_keys|known_hosts)
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1555.004
+  tags:
+  - credential-access
+  - ssh-keys
+  flags: 3
+- id: 3004
+  name: Sudoers File Access
+  pattern: (cat|cp|dd|visudo|grep|awk|sed).*sudoers
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1548.003
+  tags:
+  - privilege-escalation
+  - sudoers
+  flags: 3
+- id: 3005
+  name: Kerberos Credential Access
+  pattern: (klist|kinit|ktutil|kdestroy).*(-k|-t|keytab)
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1558.003
+  tags:
+  - kerberos
+  - credential-access
+  flags: 3
+- id: 3006
+  name: Browser Credential Dumping
+  binary_pattern: (chrome|firefox|chromium|brave|edge)
+  pattern: (Login Data|key4.db|logins.json|cookies.sqlite)
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1555.003
+  tags:
+  - credential-access
+  - browser
+  flags: 5
+- id: 3007
+  name: AWS/GCP/Azure CLI Credential Access
+  binary_pattern: (aws|gcloud|az|kubectl)
+  pattern: (configure|auth|login|get-credentials).*--profile|--key|--secret
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1528
+  - T1552
+  tags:
+  - cloud-credentials
+  flags: 5
+- id: 4001
+  name: Sudo/SU Abuse
+  binary_pattern: (sudo|su|doas|pkexec)
+  pattern: (sudo|su|doas|pkexec).*(-i|-s|bash|sh|/bin/)
+  action: ALERT
+  severity: MEDIUM
+  mitre:
+  - T1548.003
+  tags:
+  - privilege-escalation
+  - sudo
+  flags: 5
+- id: 4002
+  name: SUID/SGID Binary Execution
+  binary_pattern: (find|bash|sh|python|perl|ruby|vim|nano|awk|sed|cp|mv)
+  pattern: ''
+  action: ALERT
+  severity: MEDIUM
+  mitre:
+  - T1548.001
+  tags:
+  - privilege-escalation
+  - suid
+  flags: 4
+  uid_min: 0
+  uid_max: 0
+- id: 4003
+  name: LD_PRELOAD Hijack Attempt
+  pattern: LD_PRELOAD=
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1574.006
+  tags:
+  - privilege-escalation
+  - library-injection
+  flags: 3
+- id: 4004
+  name: LD_LIBRARY_PATH Hijack
+  pattern: LD_LIBRARY_PATH=
+  action: ALERT
+  severity: MEDIUM
+  mitre:
+  - T1574.006
+  tags:
+  - privilege-escalation
+  - library-injection
+  flags: 3
+- id: 4005
+  name: Cron/Service Persistence
+  binary_pattern: (crontab|systemctl|service|update-rc.d|chkconfig|systemd-run|at|batch)
+  pattern: ''
+  action: ALERT
+  severity: MEDIUM
+  mitre:
+  - T1053.003
+  - T1543.002
+  tags:
+  - persistence
+  - cron
+  - systemd
+  flags: 4
+- id: 4006
+  name: Kernel Module Load
+  binary_pattern: (insmod|modprobe|kmod)
+  pattern: ''
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1547.006
+  tags:
+  - kernel
+  - persistence
+  flags: 4
+- id: 4007
+  name: Capabilities Abuse
+  binary_pattern: (getcap|setcap|capsh)
+  pattern: ''
+  action: ALERT
+  severity: MEDIUM
+  mitre:
+  - T1548.002
+  tags:
+  - linux-capabilities
+  flags: 4
+- id: 5001
+  name: Log Tampering - history/wtmp/utmp
+  pattern: (history|last|lastb|utmpdump|wtmp|btmp).*(-c|-d|--clear|>\s*/dev/null)
+  action: KILL
+  severity: CRITICAL
+  mitre:
+  - T1070.003
+  tags:
+  - defense-evasion
+  - log-tampering
+  flags: 3
+- id: 5002
+  name: Audit Log Tampering
+  binary_pattern: (auditctl|ausearch|aureport|audispd)
+  pattern: ''
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1562.002
+  tags:
+  - defense-evasion
+  - audit
+  flags: 4
+- id: 5003
+  name: Timestamp Modification
+  binary_pattern: touch
+  pattern: touch.*(-r|--reference|-t|-d).*
+  action: ALERT
+  severity: MEDIUM
+  mitre:
+  - T1070.006
+  tags:
+  - defense-evasion
+  - timestomp
+  flags: 3
+- id: 5004
+  name: Binary Padding/Overwrite
+  binary_pattern: (dd|cp|cat|tee|printf|echo)
+  pattern: (if=|of=).*\.(so|exe|bin|elf)
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1027.001
+  tags:
+  - defense-evasion
+  - binary-padding
+  flags: 3
+- id: 5005
+  name: Process Injection via ptrace
+  pattern: ptrace.*PTRACE_ATTACH|gdb.*-p
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1055.008
+  tags:
+  - process-injection
+  - ptrace
+  flags: 3
+- id: 6001
+  name: Network Recon - Port Scanning Tools
+  binary_pattern: (nmap|masscan|zmap|rustscan|naabu|unicornscan)
+  pattern: ''
+  action: ALERT
+  severity: MEDIUM
+  mitre:
+  - T1046
+  tags:
+  - discovery
+  - port-scan
+  flags: 4
+- id: 6002
+  name: System Info Discovery
+  binary_pattern: (uname|lscpu|lsmem|lsblk|lspci|lsusb|dmidecode|hwprobe)
+  pattern: ''
+  action: ALERT
+  severity: LOW
+  mitre:
+  - T1082
+  tags:
+  - discovery
+  - system-info
+  flags: 4
+- id: 6003
+  name: Container/K8s Discovery
+  binary_pattern: (kubectl|docker|ctr|crictl|nerdctl|podman|crictl)
+  pattern: (get|list|describe).*(-A|--all-namespaces|pods|nodes|services|secrets)
+  action: ALERT
+  severity: MEDIUM
+  mitre:
+  - T1613
+  tags:
+  - discovery
+  - kubernetes
+  - container
+  flags: 5
+- id: 6004
+  name: Cloud Metadata Service Access
+  pattern: (169.254.169.254|metadata.google.internal|metadata.azure.com).*\/latest\/meta-data|\/computeMetadata\/v1
+  action: KILL
+  severity: CRITICAL
+  mitre:
+  - T1590.005
+  tags:
+  - cloud
+  - metadata-service
+  - credential-access
+  flags: 3
+- id: 6005
+  name: Process Enumeration
+  binary_pattern: (ps|pstree|pgrep|pidof|top|htop|btop|glances)
+  pattern: ''
+  action: ALERT
+  severity: LOW
+  mitre:
+  - T1057
+  tags:
+  - discovery
+  - process-enum
+  flags: 4
+- id: 7001
+  name: SSH Lateral Movement
+  binary_pattern: (ssh|scp|sftp|rsync)
+  pattern: (-i|-o.*IdentityFile|-o.*ProxyJump|-o.*ProxyCommand).*
+  action: ALERT
+  severity: MEDIUM
+  mitre:
+  - T1021.004
+  tags:
+  - lateral-movement
+  - ssh
+  flags: 3
+- id: 7002
+  name: Pass-the-Hash/Ticket Tools
+  binary_pattern: (psexec|wmiexec|smbexec|atexec|dcomexec|pth|winexe|crackmapexec|impacket)
+  pattern: ''
+  action: KILL
+  severity: CRITICAL
+  mitre:
+  - T1550.002
+  - T1550.003
+  tags:
+  - lateral-movement
+  - pass-the-hash
+  flags: 4
+- id: 7003
+  name: Remote Service Exploitation
+  binary_pattern: (msfconsole|msfvenom|searchsploit|exploitdb)
+  pattern: ''
+  action: KILL
+  severity: CRITICAL
+  mitre:
+  - T1210
+  tags:
+  - exploitation
+  - metasploit
+  flags: 4
+- id: 8001
+  name: Archive Collection
+  binary_pattern: (tar|zip|gzip|bzip2|xz|7z|rar)
+  pattern: (-c|-a|--create).*(-z|-j|-J).*\.(tar|tgz|tbz2|txz|zip)
+  action: ALERT
+  severity: MEDIUM
+  mitre:
+  - T1560.001
+  tags:
+  - collection
+  - archiving
+  flags: 3
+- id: 8002
+  name: Email Collection
+  binary_pattern: (mail|mailx|mutt|alpine|thunderbird|evolution)
+  pattern: ''
+  action: ALERT
+  severity: MEDIUM
+  mitre:
+  - T1114
+  tags:
+  - collection
+  - email
+  flags: 4
+- id: 9001
+  name: C2 - Known Malware Binaries
+  binary_pattern: (cobaltstrike|beacon|metasploit|meterpreter|sliver|havoc|bruteratel|poshc2|empire|koadic|pupy|merlin|trevorc2|dnscat2|iodine|chisel|ligolo|nps|frp|ngrok|cloudflared)
+  pattern: ''
+  action: KILL
+  severity: CRITICAL
+  mitre:
+  - T1219
+  - T1573
+  tags:
+  - c2
+  - remote-access-tool
+  flags: 4
+- id: 9002
+  name: C2 - Tunneling/Proxy Tools
+  binary_pattern: (ssh|socat|nc|ncat|proxychains|torsocks|redsocks|stunnel|openvpn|wireguard|tailscale|zerotier)
+  pattern: (-R|-L|-D|-w|--proxy|--tunnel).*[0-9]+
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1572
+  - T1090
+  tags:
+  - c2
+  - tunneling
+  - proxy
+  flags: 3
+- id: 9003
+  name: DNS Tunneling
+  pattern: (dig|nslookup|host|drill).*@.*\.(tk|ml|ga|cf|gq|xyz|top|club|online|site|space|website|pw|cc|ws|info|biz|name|mobi|pro|tel|asia|me|io|co|tv|cc|sh|ac|io|ai|gg|nu|vc|sc|vg|gd|ms|je|im|io|sh|ac|io|gg)
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1572
+  tags:
+  - c2
+  - dns-tunneling
+  flags: 3
+- id: 9004
+  name: Outbound to Blocked Country
+  pattern: ''
+  action: BLOCK
+  severity: HIGH
+  mitre:
+  - T1090.003
+  tags:
+  - geo-block
+  - network
+  flags: 32
+- id: 9005
+  name: Suspicious High Port Connections
+  pattern: ''
+  action: ALERT
+  severity: MEDIUM
+  mitre:
+  - T1090
+  tags:
+  - network
+  - high-ports
+  flags: 32
+- id: 10001
+  name: Large Data Transfer - scp/rsync
+  binary_pattern: (scp|rsync|sftp|scp|ftp|s3cmd|aws|gsutil|azcopy|rclone)
+  pattern: ''
+  action: ALERT
+  severity: MEDIUM
+  mitre:
+  - T1048
+  - T1567
+  tags:
+  - exfiltration
+  - data-transfer
+  flags: 4
+- id: 11001
+  name: Ransomware - File Encryption
+  binary_pattern: (gpg|openssl|ccrypt|age|sops|7z|rar|zip|tar)
+  pattern: (-e|-c|--encrypt|--password|-p)
+  action: KILL
+  severity: CRITICAL
+  mitre:
+  - T1486
+  tags:
+  - ransomware
+  - encryption
+  - impact
+  flags: 7
+- id: 11002
+  name: Disk Wiping
+  binary_pattern: (dd|shred|wipe|scrub|badblocks|mkfs|fdisk|parted|sfdisk)
+  pattern: (of=|if=).*\/(sd|hd|vd|nvme|mmcblk|loop|dm-|md|zram)
+  action: KILL
+  severity: CRITICAL
+  mitre:
+  - T1561.001
+  - T1561.002
+  tags:
+  - impact
+  - disk-wipe
+  - destruction
+  flags: 3
+- id: 11003
+  name: Service Stop/Disable
+  binary_pattern: (systemctl|service|chkconfig|update-rc.d|rc-update|sv|svcadm)
+  pattern: (stop|disable|mask|kill).*
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1489
+  tags:
+  - impact
+  - service-stop
+  flags: 4
+- id: 12001
+  name: Container Escape - nsenter
+  pattern: nsenter.*-t\s+1\s+-m\s+-u\s+-n
+  action: KILL
+  severity: CRITICAL
+  mitre:
+  - T1611
+  tags:
+  - container-escape
+  - nsenter
+  flags: 3
+- id: 12002
+  name: Container Escape - Privileged Pod
+  binary_pattern: (kubectl|docker|podman|ctr|nerdctl|crictl)
+  pattern: (--privileged|hostPID|hostNetwork|hostIPC|cap-add=SYS_ADMIN|cap-add=CAP_DAC_OVERRIDE|securityContext.privileged)
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1611
+  tags:
+  - container-escape
+  - kubernetes
+  - privileged
+  flags: 5
+- id: 12003
+  name: Container Escape - CVE-2022-0811 (CRI-O)
+  binary_pattern: (crictl|crio|runc|containerd)
+  pattern: ''
+  action: ALERT
+  severity: CRITICAL
+  mitre:
+  - T1611
+  tags:
+  - container-escape
+  - cve-2022-0811
+  flags: 4
+- id: 12004
+  name: Kubernetes RBAC Abuse
+  binary_pattern: kubectl
+  pattern: (create|patch|update).*rolebinding|clusterrolebinding|role|clusterrole.*--user|--group|--serviceaccount
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1098
+  tags:
+  - kubernetes
+  - rbac
+  - privilege-escalation
+  flags: 3
+- id: 12005
+  name: Container Drift - Unexpected Process
+  lineage_id: 0
+  action: ALERT
+  severity: MEDIUM
+  mitre:
+  - T1611
+  tags:
+  - container-drift
+  - anomaly
+  flags: 8
+- id: 13001
+  name: Crypto Miner Binary
+  binary_pattern: (xmrig|cpuminer|minerd|ccminer|ethminer|sgminer|bfgminer|t-rex|teamredminer|nbminer|lolminer|gminer|bmminer|claymore|phoenixminer|nanominer|wildrig|rigel|verthashminer|kawpowminer|kawpowd|randomx|monero|xmrig|xmrig-nvidia|xmrig-amd)
+  pattern: ''
+  action: KILL
+  severity: HIGH
+  mitre:
+  - T1496
+  tags:
+  - cryptomining
+  - resource-hijacking
+  flags: 4
+- id: 13002
+  name: Crypto Mining Pool Connection
+  pattern: (stratum|xmr|eth|etc|btc|ltc|doge|xdag|beam|grin|ckb|rvn|cfx|erg|flux|ktn|rx|rx2|rx3|rx4|rx5|rx6|rx7|rx8|rx9|rx0).*\.(com|net|org|io|xyz|top|me|online|site|space|pool|mining)
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1496
+  tags:
+  - cryptomining
+  - network
+  flags: 32
+- id: 13003
+  name: High CPU Sustained (Anomaly)
+  lineage_id: 0
+  action: ALERT
+  severity: MEDIUM
+  mitre:
+  - T1496
+  tags:
+  - cryptomining
+  - anomaly
+  - resource
+  flags: 8
+- id: 14001
+  name: Package Manager Abuse - Unexpected Install
+  binary_pattern: (apt|apt-get|yum|dnf|pacman|zypper|apk|emerge|pip|npm|yarn|pnpm|gem|cargo|go|composer|maven|gradle|nuget)
+  pattern: (install|add|get).*(-y|--yes|--assume-yes|--force|--allow-unauthenticated)
+  action: ALERT
+  severity: MEDIUM
+  mitre:
+  - T1195.002
+  tags:
+  - supply-chain
+  - package-manager
+  flags: 5
+- id: 14002
+  name: Unsigned/Modified Binary Execution
+  pattern: ''
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1553.002
+  tags:
+  - integrity
+  - unsigned-binary
+  flags: 0
+- id: 15001
+  name: 'PCI-DSS: PAN Data Access'
+  pattern: '[0-9]{13,19}|[0-9]{4}[-\s]?[0-9]{4}[-\s]?[0-9]{4}[-\s]?[0-9]{4}'
+  action: ALERT
+  severity: HIGH
+  mitre: []
+  tags:
+  - compliance
+  - pci-dss
+  - pan
+  flags: 3
+- id: 15002
+  name: 'HIPAA: PHI Access Patterns'
+  pattern: (ssn|social.security|medical|health|patient|diagnosis|prescription|icd|hipaa|phi|pii)
+  action: ALERT
+  severity: HIGH
+  mitre: []
+  tags:
+  - compliance
+  - hipaa
+  - phi
+  flags: 3
+- id: 15003
+  name: 'GDPR: Personal Data Access'
+  pattern: (gdpr|personal.data|pii|email|address|phone|ip.address|cookie|consent)
+  action: ALERT
+  severity: MEDIUM
+  mitre: []
+  tags:
+  - compliance
+  - gdpr
+  - pii
+  flags: 3
+- id: 15004
+  name: Database Dump/Export
+  binary_pattern: (mysqldump|pg_dump|mongodump|redis-cli|sqlite3|sqlcmd|bcp|expdp|impdp)
+  pattern: ''
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1005
+  tags:
+  - compliance
+  - data-exfiltration
+  - database
+  flags: 4
+- id: 16001
+  name: 'FIM: /etc/passwd Modification'
+  pattern: /etc/passwd
+  action: ALERT
+  severity: CRITICAL
+  mitre:
+  - T1003.008
+  tags:
+  - fim
+  - critical-file
+  - etc-passwd
+  flags: 64
+- id: 16002
+  name: 'FIM: /etc/shadow Modification'
+  pattern: /etc/shadow
+  action: KILL
+  severity: CRITICAL
+  mitre:
+  - T1003.008
+  tags:
+  - fim
+  - critical-file
+  - etc-shadow
+  flags: 64
+- id: 16003
+  name: 'FIM: /etc/sudoers Modification'
+  pattern: /etc/sudoers
+  action: ALERT
+  severity: CRITICAL
+  mitre:
+  - T1548.003
+  tags:
+  - fim
+  - critical-file
+  - sudoers
+  flags: 64
+- id: 16004
+  name: 'FIM: SSH Config Modification'
+  pattern: /etc/ssh/sshd_config|/etc/ssh/ssh_config|~/.ssh/authorized_keys|~/.ssh/config
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1098.004
+  tags:
+  - fim
+  - ssh
+  - persistence
+  flags: 64
+- id: 16005
+  name: 'FIM: Systemd Service Modification'
+  pattern: /etc/systemd/system/|/lib/systemd/system/|/usr/lib/systemd/system/
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1543.002
+  tags:
+  - fim
+  - systemd
+  - persistence
+  flags: 64
+- id: 16006
+  name: 'FIM: Cron Modification'
+  pattern: /etc/cron|/var/spool/cron|/etc/anacrontab
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1053.003
+  tags:
+  - fim
+  - cron
+  - persistence
+  flags: 64
+- id: 16007
+  name: 'FIM: Kernel Module Config'
+  pattern: /etc/modprobe.d/|/etc/modules-load.d/|/etc/depmod.d/
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1547.006
+  tags:
+  - fim
+  - kernel
+  - persistence
+  flags: 64
+- id: 16008
+  name: 'FIM: Bootloader Config'
+  pattern: /boot/grub|/boot/efi|/etc/default/grub
+  action: ALERT
+  severity: CRITICAL
+  mitre:
+  - T1542.003
+  tags:
+  - fim
+  - bootloader
+  - persistence
+  flags: 64
