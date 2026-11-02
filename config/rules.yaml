@@ -252,16 +252,16 @@ rules:
   - sudo
   flags: 5
 - id: 4002
-  name: SUID/SGID Binary Execution
-  binary_pattern: (find|bash|sh|python|perl|ruby|vim|nano|awk|sed|cp|mv)
-  pattern: ''
-  action: ALERT
-  severity: MEDIUM
+  name: "SUID/SGID Binary Execution"
+  binary_pattern: "(find|bash|sh|python|perl|ruby|vim|nano|awk|sed|cp|mv)"
+  pattern: ""
+  action: "ALERT"
+  severity: "LOW"
   mitre:
-  - T1548.001
+  - "T1548.001"
   tags:
-  - privilege-escalation
-  - suid
+  - "privilege-escalation"
+  - "suid"
   flags: 4
   uid_min: 0
   uid_max: 0
