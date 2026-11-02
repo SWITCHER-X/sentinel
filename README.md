@@ -11,6 +11,14 @@
 
 Project SENTINEL judges a process by **who launched it**, not only by what it looks like. Every `execve` is tagged with a 64-bit lineage ID chained to its parent's ID, so a rogue shell spawned by a web server stands out from the legitimate process tree around it. Detection runs from a small kernel-side eBPF program, a userspace agent applies rules and enforcement, and a hub serves a live SOC dashboard.
 
+### Key Capabilities
+- **Lineage tracking** — deterministic 64-bit lineage IDs chained from parent to child across `execve`/`execveat`
+- **Kernel enforcement** — `execve` tracepoint + `bprm_check_security` LSM hook kill blocked descendants at exec
+- **Signed hub↔agent channel** — single directive response with HMAC-SHA256, replay guard, schema versioning
+- **libbpf CO-RE loader** — no BCC dependency, works on any BTF kernel, loads on your Arch/Ubuntu/Fedora box
+- **MITRE-mapped rules** — 73 rules covering reverse shells, pipe downloads, shadow access, lateral movement, crypto miners, FIM, etc.
+- **Live dashboard** — D3 force-graph lineage tree, SSE telemetry, operator block/trust actions
+
 ---
 
 ## Contents
@@ -332,13 +340,22 @@ Test only on machines you own or are authorized to test. `demo/attack.sh` runs r
 
 ## Status and known limitations
 
-Project SENTINEL is **alpha** software (v1.0.0), developed and tested on a single-host Arch Linux setup. Treat it as a research and learning platform, and do not rely on it as your only defense. Known gaps in this version:
+Project SENTINEL is **alpha** software (v1.0.0), developed and tested on Arch Linux. Treat it as a research and learning platform, and do not rely on it as your only defense.
 
-- **Loader:** the agent compiles eBPF through BCC at start-up; the CO-RE object produced by `make build-core` is not loaded by the agent yet.
-- **Kernel trust map:** in-kernel allowlisting and `task_kill` self-protection are not active yet — the kernel keys on a hash of the path string while the agent inserts the first 8 bytes of the file's SHA-256, so the two never match.
-- **Unblock:** operator blocks from the dashboard are pushed to the agent (signed directive, applied in Enforce mode); there is no unblock command yet.
-- **Network detectors:** geo-blocking, DNS-rate, ICMP and data-volume checks are partial (`data_volume` counts `sendmsg` calls, not bytes; nothing emits `icmp_events`).
-- **Hub scale:** state is held behind a pluggable backend (`collector/state.py`). In-memory is the default and is still single-process — run one gunicorn worker. Set `SENTINEL_REDIS_URL` to move state into Redis and scale workers. A 10,000-event buffer and per-event persistence still bound throughput.
+### ✅ Fixed in this release
+- **Loader** — agent now uses a libbpf loader process (`sentinel-loader`) instead of BCC; CO-RE object loads and attaches on any BTF kernel
+- **Kernel trust map** — path hash now byte-matches kernel C (via C library + Python fallback); in-kernel allowlisting and `task_kill` self-protection work
+- **Empty cmdline fallback** — first exec after fork backfills from `/proc/<pid>/exe` and `/proc/<pid>/cmdline`
+- **Kernel alerts** — blocked lineage, BPF/module load alerts forwarded to hub as `KERNEL_ALERT`
+- **Network byte order** — `dport` converted via `ntohs`, `daddr` to dotted IP string
+- **Agent/hub state split** — agent uses `SENTINEL_AGENT_DB`, hub uses `SENTINEL_DB`
+- **Throughput** — `hash_binary` cached with `@lru_cache`, telemetry sent from async worker queue (10k max, drop counter logged)
+
+### ⚠️ Remaining gaps
+- **Unblock command** — operator blocks from dashboard are pushed to agent (signed directive, applied in Enforce mode); no unblock command yet
+- **Network detectors** — DNS-rate, geo-blocking, data-volume checks are stubbed (loader doesn't expose `dns_queries`/`data_volume` maps yet); `icmp_events` removed (nothing emits it)
+- **Hub scale** — state backend pluggable (`collector/state.py`). In-memory default (single gunicorn worker `-w 1`). Set `SENTINEL_REDIS_URL` to use Redis and scale workers
+- **Rule 5006 removed** — was noisy (alerted on every `ls`/`ps`/`top`); can be re-added with a real pattern
 
 ---
 
