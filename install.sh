@@ -125,6 +125,7 @@ done
 if [[ ! -f "$ETC/sentinel.env" ]]; then
   sed -e "s#/opt/sentinel/config#$ETC#g" \
       -e "s#^SENTINEL_DB=.*#SENTINEL_DB=$VARLIB/lineage_db.json#" \
+      -e "s#^SENTINEL_AGENT_DB=.*#SENTINEL_AGENT_DB=$VARLIB/agent_state.json#" \
       "$OPT/.env.example" > "$ETC/sentinel.env"
   chmod 600 "$ETC/sentinel.env"
 else

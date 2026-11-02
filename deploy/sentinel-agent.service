@@ -1,8 +1,7 @@
 [Unit]
 Description=Project SENTINEL — eBPF Agent (requires kernel access)
 After=network-online.target sentinel-hub.service
-Wants=network-online.target
-BindsTo=sentinel-hub.service
+Wants=network-online.target sentinel-hub.service
 
 [Service]
 Type=simple
@@ -19,7 +18,7 @@ StandardError=journal
 # ─── eBPF needs kernel access: runs as root, minimal hardening ───
 NoNewPrivileges=no
 PrivateTmp=yes
-ProtectHome=yes
+ProtectHome=read-only
 ProtectSystem=strict
 ReadWritePaths=/var/lib/sentinel /sys
 AmbientCapabilities=CAP_BPF CAP_PERFMON CAP_SYS_ADMIN
