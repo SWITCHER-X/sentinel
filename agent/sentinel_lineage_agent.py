@@ -701,6 +701,20 @@ def handle_exec_event(event_dict: dict):
     binary_path = event.filename.decode('utf-8', 'replace').strip()
     cmdline = event.cmdline.decode('utf-8', 'replace').strip() if hasattr(event, 'cmdline') else f"{comm} {binary_path}"
 
+    # Task 2: Backfill empty filename/cmdline from /proc (first exec after fork
+    # can arrive with empty fields because user memory not resident yet)
+    if not binary_path:
+        try:
+            binary_path = os.readlink(f"/proc/{pid}/exe")
+        except OSError:
+            pass
+    if not cmdline or cmdline == f"{comm} {binary_path}":
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                cmdline = f.read().replace(b"\0", b" ").decode("utf-8", "replace").strip()
+        except OSError:
+            pass
+
     with stats_lock:
         stats["exec_events"] += 1
 
