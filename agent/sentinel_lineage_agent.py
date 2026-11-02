@@ -19,6 +19,7 @@ import subprocess
 import queue
 import socket
 import struct
+import functools
 from collections import defaultdict, deque
 from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional, Set, Tuple, Any
@@ -485,6 +486,7 @@ class KernelLoader:
 
 
 # ─── Utility Functions ───
+@functools.lru_cache(maxsize=4096)
 def hash_binary(path: str) -> str:
     """Generate SHA256 hash of binary for trust verification"""
     try:
@@ -596,21 +598,50 @@ def load_geo_rules():
             geo_rules = {"ALLOW": [], "BLOCK": []}
 
 def dispatch_telemetry(payload: dict):
-    """Send telemetry to collector hub"""
+    """Send telemetry to collector hub — non-blocking, queues for worker thread."""
     try:
-        data = json.dumps(payload).encode("utf-8")
-        headers = {"Content-Type": "application/json", "User-Agent": "Sentinel-Lineage-Agent"}
-        if AGENT_KEY:
-            headers["X-Sentinel-Key"] = AGENT_KEY
-        req = urllib.request.Request(
-            COLLECTOR_URL,
-            data=data,
-            headers=headers
-        )
-        with urllib.request.urlopen(req, timeout=2):
-            pass
-    except Exception as e:
-        print(f"[-] Telemetry dispatch error: {e}")
+        telemetry_queue.put_nowait(payload)
+    except queue.Full:
+        # Count drops once per minute
+        global _telemetry_drops
+        _telemetry_drops += 1
+        if _telemetry_drops % 1000 == 1:  # log every 1000th drop to avoid spam
+            print(f"[-] Telemetry queue full, dropped {_telemetry_drops} messages")
+
+# Telemetry worker thread
+telemetry_queue = queue.Queue(maxsize=10000)
+_telemetry_drops = 0
+_telemetry_worker_started = False
+
+def _telemetry_worker():
+    """Background thread that sends telemetry from the queue."""
+    global _telemetry_drops
+    while running:
+        try:
+            payload = telemetry_queue.get(timeout=1)
+            data = json.dumps(payload).encode("utf-8")
+            headers = {"Content-Type": "application/json", "User-Agent": "Sentinel-Lineage-Agent"}
+            if AGENT_KEY:
+                headers["X-Sentinel-Key"] = AGENT_KEY
+            req = urllib.request.Request(
+                COLLECTOR_URL,
+                data=data,
+                headers=headers
+            )
+            with urllib.request.urlopen(req, timeout=2):
+                pass
+        except queue.Empty:
+            continue
+        except Exception as e:
+            print(f"[-] Telemetry dispatch error: {e}")
+
+def _start_telemetry_worker():
+    """Start the telemetry worker thread if not already started."""
+    global _telemetry_worker_started
+    if not _telemetry_worker_started:
+        t = threading.Thread(target=_telemetry_worker, daemon=True)
+        t.start()
+        _telemetry_worker_started = True
 
 def match_rule(entry: LineageEntry, rule: Rule) -> bool:
     """Check if lineage entry matches rule"""
@@ -1075,6 +1106,9 @@ def main():
     load_geo_rules()
     load_trusted_binaries()
     load_lineage_db()
+
+    # Start telemetry worker thread
+    _start_telemetry_worker()
 
     # Start kernel loader
     loader = KernelLoader(os.path.join(_PROJECT_DIR, "build", "sentinel_lineage_core.o"))
