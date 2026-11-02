@@ -76,6 +76,7 @@ test:
 	python3 tests/test_auth_db.py
 	python3 tests/test_state_backend.py
 	python3 tests/test_rule_matching.py
+	python3 tests/test_agent_sync.py
 
 ## run-hub — run the collector + dashboard in the foreground
 run-hub:

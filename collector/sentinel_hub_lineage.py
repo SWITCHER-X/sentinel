@@ -13,6 +13,7 @@ import json
 import time
 import yaml
 import hmac
+import hashlib
 import urllib.request
 import functools
 from collections import defaultdict
@@ -534,6 +535,20 @@ def get_lineages():
     lose precision in JS Numbers (>2^53)."""
     return jsonify({f"0x{k:016X}": _wire_tree(v, k) for k, v in STATE.get_lineage_trees().items()})
 
+def _admin_blocked() -> set:
+    """Lineages an operator blocked from the dashboard (persisted, survives restarts)."""
+    try:
+        return {int(x, 16) for x in json.loads(sa.meta_get("admin_blocked", "[]"))}
+    except (ValueError, TypeError):
+        return set()
+
+
+def _admin_block_add(lineage_id: int) -> None:
+    ids = _admin_blocked()
+    ids.add(lineage_id)
+    sa.meta_set("admin_blocked", json.dumps(sorted(f"0x{x:016X}" for x in ids)))
+
+
 def _parse_lineage_id(lid):
     """Accept 0x-hex, bare hex, or decimal lineage ids.
     Pure-digit strings parse as DECIMAL (a 9+ digit decimal is not valid hex
@@ -564,6 +579,7 @@ def block_lineage(lid):
         return jsonify({"error": "invalid lineage id"}), 400
 
     STATE.add_blocked_lineage(lineage_id)
+    _admin_block_add(lineage_id)
     STATE.update_lineage_tree(lineage_id, lambda t: t.__setitem__("blocked", True))
     # Block direct child lineages too
     for child_id, tree in STATE.get_lineage_trees().items():
@@ -622,16 +638,37 @@ def handle_geo():
 
 @app.route("/api/v1/agent/commands", methods=["GET"])
 def agent_commands():
-    """Agent polls this endpoint for commands (block lineage, trust, etc.)"""
+    """Signed directive the agent polls: mode, operator commands and the allowlist in one response.
+
+    Shape (schema 1):
+      {"schema": 1, "server_time": <epoch float>, "revision": "<16 hex>",
+       "mode": "learn" | "enforce",
+       "commands": [{"type": "block_lineage", "lineage_id": "0x...", "action": "kill"},
+                    {"type": "trust_lineage", "lineage_id": "0x..."}],
+       "allowlist": [{"tier", "value", "label", "added_at", "added_by"}, ...],
+       "signature": "<HMAC-SHA256 hex over the canonical JSON of every other field>"}
+
+    The agent verifies the signature, rejects a server_time older than the last one it
+    applied (replay), and only applies block commands while mode == "enforce".
+    """
     if not _is_agent(request):
         return jsonify({"error": "unauthorized"}), 401
 
-    commands = []
-    for lid in STATE.get_blocked_lineages():
-        commands.append({"type": "block_lineage", "lineage_id": lid, "action": "kill"})
-    for lid in STATE.get_trusted_lineages():
-        commands.append({"type": "trust_lineage", "lineage_id": lid})
-    return jsonify({"commands": commands})
+    commands = [{"type": "block_lineage", "lineage_id": f"0x{lid:016X}", "action": "kill"}
+                for lid in sorted(_admin_blocked())]
+    commands += [{"type": "trust_lineage", "lineage_id": f"0x{lid:016X}"}
+                 for lid in sorted(STATE.get_trusted_lineages())]
+    body = {
+        "schema": 1,
+        "server_time": time.time(),
+        "mode": STATE.get_mode(),
+        "commands": commands,
+        "allowlist": sa.allowlist_all(),
+    }
+    state = {k: body[k] for k in ("mode", "commands", "allowlist")}
+    body["revision"] = hashlib.sha256(
+        json.dumps(state, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:16]
+    return jsonify({**body, "signature": sa.allowlist_sign(body)})
 
 
 def _wire_event(evt):

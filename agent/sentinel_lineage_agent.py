@@ -42,27 +42,6 @@ AGENT_KEY = os.getenv("SENTINEL_AGENT_KEY", "")
 # ─── Enforcement mode (learn = observe-only; hub is the source of truth) ───
 ENFORCEMENT_MODE = "enforce"
 
-def _mode_poller():
-    """Refresh enforcement mode from the hub every 30s. Learn mode downgrades
-    every KILL/BLOCK/QUARANTINE to LOG — observe, never enforce."""
-    global ENFORCEMENT_MODE
-    base = COLLECTOR_URL.rsplit("/api/", 1)[0]
-    while True:
-        try:
-            req = urllib.request.Request(f"{base}/api/v1/mode", method="GET")
-            if AGENT_KEY:
-                req.add_header("X-Sentinel-Key", AGENT_KEY)
-            with urllib.request.urlopen(req, timeout=5) as r:
-                mode = json.loads(r.read()).get("mode")
-                if mode in ("learn", "enforce") and mode != ENFORCEMENT_MODE:
-                    ENFORCEMENT_MODE = mode
-                    print(f"[*] enforcement mode → {mode}", flush=True)
-        except Exception as e:
-            print(f"[-] mode poll failed: {e}")
-        time.sleep(30)
-
-threading.Thread(target=_mode_poller, daemon=True).start()
-
 # ─── Signed allowlist engine ───
 # The hub owns the tiered allowlist (hash pins / publisher / lineage contexts)
 # and distributes it as an HMAC-signed blob. The agent verifies the signature
@@ -111,30 +90,67 @@ def _apply_hash_allowlist(hashes: set):
         except (KeyError, Exception):
             pass
 
-def _allowlist_poller():
-    """Fetch + verify the signed allowlist from the hub every 60s."""
+SYNC_INTERVAL = int(os.getenv("SENTINEL_SYNC_INTERVAL", "30"))
+_last_sync_time = 0.0
+
+def apply_directive(payload: dict) -> bool:
+    """Verify and apply one signed hub directive (GET /api/v1/agent/commands).
+
+    Order matters: signature first, then schema, then replay check, and only then
+    anything that changes agent state. Returns True when the directive was applied.
+    """
+    global ENFORCEMENT_MODE, _last_sync_time
+    sig = payload.get("signature", "")
+    body = {k: v for k, v in payload.items() if k != "signature"}
+    if not _allowlist_key() or not sig or not verify_allowlist_blob(body, sig):
+        print("[-] hub directive signature INVALID — ignoring", flush=True)
+        return False
+    if body.get("schema") != 1:
+        print(f"[-] hub directive schema {body.get('schema')!r} unsupported — ignoring", flush=True)
+        return False
+    try:
+        server_time = float(body.get("server_time", 0))
+    except (TypeError, ValueError):
+        return False
+    if server_time <= _last_sync_time:
+        print("[-] hub directive is older than the last applied one (replay?) — ignoring", flush=True)
+        return False
+    _last_sync_time = server_time
+
+    mode = body.get("mode")
+    if mode in ("learn", "enforce") and mode != ENFORCEMENT_MODE:
+        ENFORCEMENT_MODE = mode
+        print(f"[*] enforcement mode → {mode}", flush=True)
+
+    _apply_hash_allowlist({e["value"] for e in body.get("allowlist", [])
+                           if e.get("tier") == "hash" and len(e.get("value", "")) == 64})
+
+    if ENFORCEMENT_MODE == "enforce":
+        for cmd in body.get("commands", []):
+            if cmd.get("type") != "block_lineage" or cmd.get("action") != "kill":
+                continue                       # unknown / unsupported command types are skipped
+            try:
+                lid = int(cmd["lineage_id"], 16)
+            except (KeyError, ValueError, TypeError):
+                continue
+            if lid not in blocked_lineages:
+                block_lineage(lid, Rule(id=0, name="Operator block (hub)", pattern=""))
+    return True
+
+def _sync_poller():
+    """Poll the hub's signed directive every SYNC_INTERVAL seconds."""
     base = COLLECTOR_URL.rsplit("/api/", 1)[0]
     while True:
         try:
-            req = urllib.request.Request(f"{base}/api/v1/allowlist", method="GET")
+            req = urllib.request.Request(f"{base}/api/v1/agent/commands", method="GET")
             if AGENT_KEY:
                 req.add_header("X-Sentinel-Key", AGENT_KEY)
             with urllib.request.urlopen(req, timeout=5) as r:
-                payload = json.loads(r.read())
-            blob = {"entries": payload.get("entries", []),
-                    "generated_at": payload.get("generated_at", 0)}
-            sig = payload.get("signature", "")
-            if sig and verify_allowlist_blob(blob, sig):
-                hashes = {e["value"] for e in blob["entries"] if e.get("tier") == "hash"
-                          and len(e.get("value", "")) == 64}
-                _apply_hash_allowlist(hashes)
-            else:
-                print("[-] allowlist signature INVALID — keeping previous allowlist", flush=True)
+                apply_directive(json.loads(r.read()))
         except Exception as e:
-            print(f"[-] allowlist poll failed: {e}")
-        time.sleep(60)
+            print(f"[-] hub sync failed: {e}")
+        time.sleep(SYNC_INTERVAL)
 
-threading.Thread(target=_allowlist_poller, daemon=True).start()
 BLOCKED_COUNTRIES = ["CN", "RU", "KP", "IR"]
 
 # ─── Data Structures ───
@@ -886,6 +902,7 @@ def main():
         blocked_map[key] = b'\x01'
     
     # Start background threads
+    threading.Thread(target=_sync_poller, daemon=True).start()
     threading.Thread(target=periodic_save, daemon=True).start()
     threading.Thread(target=print_stats, daemon=True).start()
     threading.Thread(target=check_anomalies, daemon=True).start()

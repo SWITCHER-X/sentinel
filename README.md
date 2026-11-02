@@ -119,8 +119,8 @@ The bundled `vmlinux.h` and the Makefile target x86_64.
 ### Installer (recommended)
 
 ```bash
-git clone https://github.com/SWITCHER-X/sentinel-lineage-edr.git
-cd sentinel-lineage-edr
+git clone https://github.com/SWITCHER-X/sentinel.git
+cd sentinel
 sudo ./install.sh              # hub + eBPF agent
 sudo ./install.sh --hub-only   # dashboard and collector only
 ```
@@ -265,6 +265,7 @@ All `/api/v1/*` routes require a dashboard session or the agent key, except wher
 | `/api/v1/lineage/<id>/block`, `/trust` | POST | Mark a lineage blocked or trusted |
 | `/api/v1/mode` | GET / POST | Learn or enforce (POST needs session + CSRF) |
 | `/api/v1/allowlist` | GET / POST / DELETE | Signed allowlist (mutations need session + CSRF) |
+| `/api/v1/agent/commands` | GET | Signed directive for agents: mode, operator commands, allowlist (agent key) |
 | `/api/v1/rules`, `/api/v1/geo` | GET / POST | Rule and geo policy |
 | `/health`, `/metrics` | GET | Health check and Prometheus metrics (no auth) |
 
@@ -334,7 +335,7 @@ Project SENTINEL is **alpha** software (v1.0.0), developed and tested on a singl
 
 - **Loader:** the agent compiles eBPF through BCC at start-up; the CO-RE object produced by `make build-core` is not loaded by the agent yet.
 - **Kernel trust map:** in-kernel allowlisting and `task_kill` self-protection are not active yet — the kernel keys on a hash of the path string while the agent inserts the first 8 bytes of the file's SHA-256, so the two never match.
-- **Dashboard blocks:** the hub records block/trust intent and the agent command feed exists (`GET /api/v1/agent/commands`), but the agent does not yet poll it, so UI blocks are not applied in the kernel.
+- **Unblock:** operator blocks from the dashboard are pushed to the agent (signed directive, applied in Enforce mode); there is no unblock command yet.
 - **Network detectors:** geo-blocking, DNS-rate, ICMP and data-volume checks are partial (`data_volume` counts `sendmsg` calls, not bytes; nothing emits `icmp_events`).
 - **Hub scale:** state is held behind a pluggable backend (`collector/state.py`). In-memory is the default and is still single-process — run one gunicorn worker. Set `SENTINEL_REDIS_URL` to move state into Redis and scale workers. A 10,000-event buffer and per-event persistence still bound throughput.
 

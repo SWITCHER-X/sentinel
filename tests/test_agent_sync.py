@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""Hub -> agent directive tests (GET /api/v1/agent/commands).
+
+Covers the response structure the hub emits and how the agent verifies and applies it:
+  * structure and signature of the directive
+  * operator blocks reach the agent; rule-KILL telemetry does not escalate into blocks
+  * the agent rejects tampered, replayed and unknown-schema directives
+  * block commands are applied in Enforce mode only
+
+Drives the real hub (Flask test client) and the real agent module (bcc stubbed).
+Run: python3 tests/test_agent_sync.py
+"""
+import os
+import sys
+import tempfile
+import types
+import unittest
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+_tmp = tempfile.mkdtemp(prefix="sentinel-sync-test-")
+
+os.environ.update({
+    "SENTINEL_AGENT_KEY": "test-agent-key",
+    "SENTINEL_SESSION_SECRET": "test-session-secret",
+    "SENTINEL_ALLOWLIST_KEY": "test-allowlist-key",
+    "SENTINEL_ADMIN_PASSWORD": "test-admin-pw",
+    "SENTINEL_DB_PATH": os.path.join(_tmp, "sentinel.db"),
+    "SENTINEL_DB": os.path.join(_tmp, "lineage_db.json"),
+    "SENTINEL_CONFIG": str(REPO / "config" / "rules.yaml"),
+})
+
+_bcc = types.ModuleType("bcc"); _bcc.BPF = object
+_bcc_utils = types.ModuleType("bcc.utils"); _bcc_utils.printb = lambda *a, **k: None
+sys.modules.setdefault("bcc", _bcc)
+sys.modules.setdefault("bcc.utils", _bcc_utils)
+sys.path.insert(0, str(REPO / "collector"))
+sys.path.insert(0, str(REPO / "agent"))
+
+import sentinel_hub_lineage as hub  # noqa: E402
+import sentinel_lineage_agent as A  # noqa: E402
+
+AGENT = {"X-Sentinel-Key": "test-agent-key"}
+
+
+class HubDirective(unittest.TestCase):
+    def setUp(self):
+        self.c = hub.app.test_client()
+
+    def _admin(self):
+        r = self.c.post("/api/v1/login", json={"username": "admin", "password": "test-admin-pw"})
+        self.assertEqual(r.status_code, 200)
+        return {"X-CSRF-Token": r.get_json()["csrf"]}
+
+    def test_requires_agent_key(self):
+        self.assertEqual(self.c.get("/api/v1/agent/commands").status_code, 401)
+        self.assertEqual(self.c.get("/api/v1/agent/commands", headers={"X-Sentinel-Key": "wrong"}).status_code, 401)
+
+    def test_structure(self):
+        d = self.c.get("/api/v1/agent/commands", headers=AGENT).get_json()
+        self.assertEqual(d["schema"], 1)
+        self.assertIn(d["mode"], ("learn", "enforce"))
+        self.assertIsInstance(d["server_time"], float)
+        self.assertIsInstance(d["commands"], list)
+        self.assertIsInstance(d["allowlist"], list)
+        self.assertEqual(len(d["revision"]), 16)
+        self.assertTrue(d["signature"])
+
+    def test_signature_matches_agent_verifier(self):
+        d = self.c.get("/api/v1/agent/commands", headers=AGENT).get_json()
+        sig = d.pop("signature")
+        self.assertTrue(A.verify_allowlist_blob(d, sig))
+
+    def test_operator_block_is_distributed_but_rule_kill_is_not(self):
+        h = self._admin()
+        self.assertEqual(self.c.post("/api/v1/lineage/0xAAAA/block", headers=h).status_code, 200)
+        # a rule KILL reported by an agent marks the lineage blocked on the hub only
+        self.c.post("/api/v1/telemetry", headers=AGENT, json={
+            "type": "EXEC_THREAT", "rule_id": 1, "pid": 9, "ppid": 1, "lineage_id": 0xBBBB,
+            "comm": "x", "severity": "HIGH", "action": "KILL"})
+        ids = {c["lineage_id"] for c in self.c.get("/api/v1/agent/commands", headers=AGENT)
+               .get_json()["commands"] if c["type"] == "block_lineage"}
+        self.assertIn("0x000000000000AAAA", ids)
+        self.assertNotIn("0x000000000000BBBB", ids)
+
+    def test_mode_change_is_reflected(self):
+        h = self._admin()
+        self.c.post("/api/v1/mode", json={"mode": "learn"}, headers=h)
+        self.assertEqual(self.c.get("/api/v1/agent/commands", headers=AGENT).get_json()["mode"], "learn")
+        self.c.post("/api/v1/mode", json={"mode": "enforce"}, headers=h)
+        self.assertEqual(self.c.get("/api/v1/agent/commands", headers=AGENT).get_json()["mode"], "enforce")
+
+
+class AgentApplies(unittest.TestCase):
+    def setUp(self):
+        self.c = hub.app.test_client()
+        self.killed = []
+        A.os.kill = lambda pid, sig: self.killed.append(pid)
+        A.bpf = {"blocked_lineages": {}}
+        A.blocked_lineages.clear()
+        A.lineage_tree.clear()
+        A._last_sync_time = 0.0
+        A.ENFORCEMENT_MODE = "enforce"
+        r = self.c.post("/api/v1/login", json={"username": "admin", "password": "test-admin-pw"})
+        self.h = {"X-CSRF-Token": r.get_json()["csrf"]}
+        self.c.post("/api/v1/mode", json={"mode": "enforce"}, headers=self.h)
+
+    def _directive(self):
+        return self.c.get("/api/v1/agent/commands", headers=AGENT).get_json()
+
+    def test_operator_block_reaches_kernel_map_and_kills_live_processes(self):
+        lid = 0x1234ABCD
+        A.lineage_tree[777] = A.LineageEntry(
+            lineage_id=lid, parent_lineage_id=0, pid=777, ppid=1, uid=0, gid=0, ns_pid=777,
+            comm="x", binary_path="/tmp/x", cmdline="x", exec_timestamp=0.0, flags=0)
+        self.c.post(f"/api/v1/lineage/{lid:#x}/block", headers=self.h)
+        self.assertTrue(A.apply_directive(self._directive()))
+        self.assertIn(lid, A.blocked_lineages)
+        self.assertIn(lid.to_bytes(8, "little"), A.bpf["blocked_lineages"])
+        self.assertIn(777, self.killed)
+
+    def test_learn_mode_does_not_block(self):
+        self.c.post("/api/v1/lineage/0x5555/block", headers=self.h)
+        self.c.post("/api/v1/mode", json={"mode": "learn"}, headers=self.h)
+        self.assertTrue(A.apply_directive(self._directive()))
+        self.assertEqual(A.ENFORCEMENT_MODE, "learn")
+        self.assertNotIn(0x5555, A.blocked_lineages)
+
+    def test_tampered_directive_is_rejected(self):
+        d = self._directive()
+        d["mode"] = "learn" if d["mode"] == "enforce" else "enforce"
+        before = A.ENFORCEMENT_MODE
+        self.assertFalse(A.apply_directive(d))
+        self.assertEqual(A.ENFORCEMENT_MODE, before)
+
+    def test_unsigned_directive_is_rejected(self):
+        d = self._directive(); d.pop("signature")
+        self.assertFalse(A.apply_directive(d))
+
+    def test_replayed_directive_is_rejected(self):
+        old = self._directive()
+        self.c.post("/api/v1/mode", json={"mode": "learn"}, headers=self.h)
+        self.assertTrue(A.apply_directive(self._directive()))     # newer, mode=learn
+        self.assertFalse(A.apply_directive(old))                  # replay of older enforce
+        self.assertEqual(A.ENFORCEMENT_MODE, "learn")
+
+    def test_unknown_schema_is_rejected(self):
+        d = self._directive(); d["schema"] = 2
+        d["signature"] = hub.sa.allowlist_sign({k: v for k, v in d.items() if k != "signature"})
+        self.assertFalse(A.apply_directive(d))
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
