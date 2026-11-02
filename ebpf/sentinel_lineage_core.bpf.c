@@ -191,11 +191,6 @@ struct {
     __uint(max_entries, 64 * 1024);
 } alert_events SEC(".maps");
 
-struct {
-    __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 64 * 1024);
-} icmp_events SEC(".maps");
-
 // Rule entry matching userspace structure
 struct rule_entry_t {
     u32 id;

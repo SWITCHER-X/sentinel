@@ -17,6 +17,8 @@ import threading
 import urllib.request
 import subprocess
 import queue
+import socket
+import struct
 from collections import defaultdict, deque
 from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional, Set, Tuple, Any
@@ -839,6 +841,15 @@ def handle_conn_event(event_dict: dict):
     daddr = event.daddr
     dport = event.dport
 
+    # Task 5: Convert network byte order to host byte order
+    # Kernel stores dport in network byte order (big-endian)
+    dport = socket.ntohs(dport)
+    # Convert daddr from network byte order (uint32) to dotted IP string
+    try:
+        daddr_str = socket.inet_ntoa(struct.pack("!I", daddr))
+    except Exception:
+        daddr_str = str(daddr)
+
     with stats_lock:
         stats["conn_events"] += 1
 
@@ -862,6 +873,7 @@ def handle_conn_event(event_dict: dict):
                     "comm": comm,
                     "daddr": daddr,
                     "dport": dport,
+                    "daddr_str": daddr_str,
                     "killed": False,
                     "action": rule.action,
                     "timestamp": time.time()
@@ -1022,7 +1034,13 @@ def print_stats():
                   f"uptime={uptime}s lineages={len(lineage_by_id)}")
 
 def check_anomalies():
-    """Periodic anomaly detection: DNS entropy, data volume, ICMP"""
+    """Periodic anomaly detection: DNS entropy, data volume, ICMP
+
+    Note: The following checks are disabled until the loader exposes the
+    corresponding BPF maps (dns_queries, data_volume). Once available,
+    implement per-PID DNS query counting with 60s window reset, data volume
+    tracking (bytes not calls), and ICMP covert channel detection.
+    """
     import math
     from collections import Counter
 
@@ -1034,8 +1052,8 @@ def check_anomalies():
     while running:
         time.sleep(60)  # Check every minute
 
-        # Note: data_volume and dns_queries maps are not yet exposed by the loader
-        # These checks are disabled until the loader supports reading those maps
+        # TODO: Implement when loader exposes dns_queries and data_volume maps
+        # For now, these checks are skipped
 
 def signal_handler(sig, frame):
     global running
