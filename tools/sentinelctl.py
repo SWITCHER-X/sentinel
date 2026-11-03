@@ -47,8 +47,10 @@ def err(msg): print(f"{Colors.RED}[✗]{Colors.NC} {msg}")
 
 class SentinelCLI:
     def __init__(self):
-        self.config_path = os.getenv('SENTINEL_CONFIG', '/etc/sentinel/config.yaml')
-        self.rules_path = os.getenv('SENTINEL_RULES', '/etc/sentinel/rules.yaml')
+        # Priority: SENTINEL_CONFIG > SENTINEL_RULES > default
+        self.config_path = os.getenv('SENTINEL_CONFIG', 
+                       os.getenv('SENTINEL_RULES', '/etc/sentinel/rules.yaml'))
+        self.rules_path = self.config_path  # alias for backward compatibility
         self.agent_pid_file = '/var/run/sentinel-agent.pid'
         self.collector_pid_file = '/var/run/sentinel-collector.pid'
 
@@ -414,7 +416,7 @@ class SentinelCLI:
             sys.modules.setdefault(name, types.ModuleType(name))
         sys.modules["bcc"].BPF = object
         sys.modules["bcc.utils"].printb = print
-        os.environ["SENTINEL_CONFIG"] = self.rules_path
+        os.environ["SENTINEL_CONFIG"] = self.config_path
         agent_path = Path(__file__).resolve().parent.parent / "agent" / "sentinel_lineage_agent.py"
         if not agent_path.exists():
             agent_path = Path("/opt/sentinel/agent/sentinel_lineage_agent.py")

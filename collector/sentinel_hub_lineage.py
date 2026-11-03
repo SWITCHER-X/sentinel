@@ -384,19 +384,24 @@ def login_page():
 @app.route("/api/v1/login", methods=["POST"])
 def api_login():
     ip = request.remote_addr or "?"
-    allowed, retry = sa.login_attempts(ip)
+    body = request.json or {}
+    username = body.get("username", "")
+    
+    # Check both IP and username throttling
+    allowed, retry = sa.login_attempts(ip, username)
     if not allowed:
         return jsonify({"error": f"locked, retry in {retry}s"}), 429
-    body = request.json or {}
-    if sa.check_user(body.get("username", ""), body.get("password", "")):
-        sa.login_reset(ip)
+    
+    if sa.check_user(username, body.get("password", "")):
+        sa.login_reset(ip, username)
         tok = sa.session_create()
-        sa.audit(body.get("username", "?"), "login", f"ip={ip}")
+        sa.audit(username, "login", f"ip={ip}")
         resp = make_response(jsonify({"ok": True, "csrf": sa.csrf_for(tok)}))
         resp.set_cookie("sentinel_session", tok, httponly=True, samesite="Lax",
                         secure=SESSION_COOKIE_SECURE, max_age=12 * 3600)
         return resp
-    sa.login_fail(ip)
+    
+    sa.login_fail(ip, username)
     return jsonify({"error": "invalid credentials"}), 401
 
 
@@ -701,7 +706,16 @@ def event_stream():
 # ─── Health Check Endpoint ───
 @app.route("/health")
 def health_check():
-    """Health check endpoint for load balancers and monitoring"""
+    """Health check endpoint for load balancers and monitoring.
+    Unauthenticated minimal check for load balancers. Detailed info requires auth."""
+    # Check if request has auth (agent key or session)
+    has_auth = _is_agent(request) or session.get("user_id")
+    
+    # Minimal response for unauthenticated requests (load balancer probes)
+    if not has_auth:
+        return jsonify({"status": "ok"}), 200
+    
+    # Detailed response for authenticated requests
     checks = STATE.health_check()
     checks.setdefault("checks", {})
 
@@ -734,7 +748,9 @@ def health_check():
 # ─── Metrics Endpoint (Prometheus) ───
 @app.route("/metrics")
 def metrics():
-    """Prometheus metrics endpoint"""
+    """Prometheus metrics endpoint - requires agent key or session"""
+    if not (_is_agent(request) or session.get("user_id")):
+        return jsonify({"error": "unauthorized"}), 401
     st = STATE.get_stats()
     lin = st.get("lineage", {})
     logs = STATE.get_telemetry_logs()

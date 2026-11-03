@@ -270,9 +270,14 @@ static __always_inline int is_lineage_blocked(u64 lineage_id) {
 }
 
 static __always_inline u32 get_ns_pid(struct task_struct *task) {
-    struct pid_namespace *ns = BPF_CORE_READ(task, nsproxy, pid_ns_for_children);
-    if (!ns) return 0;
-    return BPF_CORE_READ(task, tgid);
+    // For the current task, use bpf_get_current_pid_tgid() which returns
+    // the PID as seen in the current namespace (lower 32 bits).
+    // For other tasks, fall back to tgid (host PID) as approximation.
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    if (task == (struct task_struct *)bpf_get_current_task()) {
+        return (u32)pid_tgid;  // lower 32 bits = current task's PID in current namespace
+    }
+    return BPF_CORE_READ(task, tgid);  // fallback: host PID
 }
 
 // Join argv[0..MAX_ARGS) with spaces into out (NUL-terminated, CMDLINE_LEN bytes).
