@@ -19,6 +19,11 @@ struct proc_event_t  { uint32_t pid, ppid, uid, ns_pid; uint64_t lineage_id, par
                        char comm[16]; char filename[256]; char cmdline[512]; };
 struct alert_event_t { uint64_t lineage_id; uint32_t pid, ns_pid, rule_id, action;
                        char comm[16]; char binary_path[256]; char matched_pattern[128]; uint64_t timestamp; };
+struct lineage_entry_t { uint64_t lineage_id, parent_lineage_id;
+                         uint32_t pid, ppid, uid, gid, ns_pid;
+                         char comm[16]; char binary_path[256]; char cmdline[512];
+                         uint64_t exec_timestamp;
+                         uint32_t flags, rule_matched; };
 
 static int failures, checks;
 #define CHECK(cond, msg) do { checks++; if (cond) printf("  PASS  %s\n", msg); \
@@ -26,6 +31,17 @@ static int failures, checks;
 
 static int is_lsm(const char *n) { return strstr(n, "_lsm") || !strcmp(n, "bpf_lsm"); }
 static int pf(enum libbpf_print_level l, const char *f, va_list a) { return l == LIBBPF_DEBUG ? 0 : 0; }
+
+// ---- path_key must match kernel's is_trusted_binary() exactly ----
+static uint64_t path_key(const char *path) {
+    uint64_t key = 0;
+    for (int i = 0; i < 256; i++) {
+        char c = path[i];
+        if (c == 0) break;
+        key ^= c + 0x9e3779b9 + (key << 6) + (key >> 2);
+    }
+    return key;
+}
 
 // ---- captured events ----
 #define MAXEV 256
@@ -49,6 +65,9 @@ static const struct proc_event_t *find(const char *file) {
     for (int i = nev - 1; i >= 0; i--) if (!strcmp(ev[i].filename, file)) return &ev[i];
     return NULL;
 }
+
+// LF_TRUSTED from ebpf/sentinel_lineage_core.bpf.c
+#define LF_TRUSTED (1 << 5)
 
 int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s <core.o>\n", argv[0]); return 2; }
@@ -78,6 +97,7 @@ int main(int argc, char **argv) {
     CHECK(attached == want, "all tracepoint programs attach (is tracefs mounted?)");
     if (attached != want) return 1;
     blocked_fd = bpf_map__fd(bpf_object__find_map_by_name(o, "blocked_lineages"));
+    int trusted_fd = bpf_map__fd(bpf_object__find_map_by_name(o, "trusted_binaries"));
     struct ring_buffer *rb = ring_buffer__new(bpf_map__fd(bpf_object__find_map_by_name(o, "exec_events")), on_exec, NULL, NULL);
     ring_buffer__add(rb, bpf_map__fd(bpf_object__find_map_by_name(o, "alert_events")), on_alert, NULL);
 
@@ -106,6 +126,30 @@ int main(int argc, char **argv) {
     CHECK(WIFEXITED(st) && WEXITSTATUS(st) == 137, "child of the blocked lineage was SIGKILLed at exec (status 137)");
     int found = 0; for (int i = 0; i < nal; i++) if (!strcmp(al[i].matched_pattern, "BLOCKED_LINEAGE") && !strcmp(al[i].binary_path, "/bin/true")) found = 1;
     CHECK(found, "BLOCKED_LINEAGE alert emitted for /bin/true");
+
+    printf("[4] trust map: path_key matches kernel, LF_TRUSTED set\n");
+    // Insert path_key("/bin/true") into trusted_binaries map
+    uint64_t true_key = path_key("/bin/true");
+    uint8_t one = 1;
+    int rc = bpf_map_update_elem(trusted_fd, &true_key, &one, BPF_ANY);
+    CHECK(rc == 0, "insert path_key(/bin/true) into trusted_binaries map");
+    // Fork and exec /bin/true
+    pid_t trusted_c = fork();
+    if (trusted_c == 0) { execl("/bin/true", "true", (char *)NULL); _exit(127); }
+    waitpid(trusted_c, NULL, 0); ring_buffer__poll(rb, 300);
+    const struct proc_event_t *true_ev = find("/bin/true");
+    CHECK(true_ev != NULL, "exec of /bin/true observed");
+    if (true_ev) {
+        // Read flags from lineage_map (keyed by PID)
+        int lineage_fd = bpf_map__fd(bpf_object__find_map_by_name(o, "lineage_map"));
+        struct lineage_entry_t le;
+        uint32_t pid_key = true_ev->pid;
+        int rc2 = bpf_map_lookup_elem(lineage_fd, &pid_key, &le);
+        bool is_trusted = (rc2 == 0 && (le.flags & LF_TRUSTED) != 0);
+        CHECK(rc2 == 0 && is_trusted, "/bin/true has LF_TRUSTED flag set in lineage_map (path_key matched)");
+    }
+    // Clean up
+    bpf_map_delete_elem(trusted_fd, &true_key);
 
     printf("\n%d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
