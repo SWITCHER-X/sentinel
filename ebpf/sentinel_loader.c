@@ -37,6 +37,7 @@
 #include <string.h>
 #include <sys/poll.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 /* ---- Event structs (must match eBPF exactly) ---- */
 struct proc_event_t {
@@ -310,8 +311,6 @@ int main(int argc, char **argv) {
         }
     }
 
-    print_info(lsm_ok, autoload_programs);
-
     if (bpf_object__load(obj)) {
         print_error("bpf_object__load failed");
         bpf_object__close(obj);
@@ -322,7 +321,7 @@ int main(int argc, char **argv) {
     int attached = 0;
     bpf_object__for_each_program(prog, obj) {
         if (bpf_program__autoload(prog)) {
-            if (bpf_program__attach(prog) == 0) attached++;
+            if (bpf_program__attach(prog) != NULL) attached++;
         }
     }
     if (attached != autoload_programs) {
@@ -330,6 +329,9 @@ int main(int argc, char **argv) {
         bpf_object__close(obj);
         return 1;
     }
+
+    /* Report ready only now: the agent treats the first line as "kernel side is live". */
+    print_info(lsm_ok, autoload_programs);
 
     /* Open ring buffers */
     struct ring_buffer *rb = ring_buffer__new(get_map_fd(obj, "exec_events"), on_exec, NULL, NULL);
@@ -340,6 +342,7 @@ int main(int argc, char **argv) {
     /* icmp_events is intentionally skipped - nothing writes it */
 
     /* Main loop: poll ring buffers and stdin */
+    fcntl(STDIN_FILENO, F_SETFL, fcntl(STDIN_FILENO, F_GETFL) | O_NONBLOCK);
     struct pollfd pfd = { .fd = STDIN_FILENO, .events = POLLIN };
     while (running) {
         int ret = ring_buffer__poll(rb, 100);
@@ -348,17 +351,18 @@ int main(int argc, char **argv) {
             break;
         }
 
-        if (poll(&pfd, 1, 0) > 0 && (pfd.revents & POLLIN)) {
+        if (poll(&pfd, 1, 0) > 0 && (pfd.revents & (POLLIN | POLLHUP | POLLERR))) {
+            /* Drain every complete line already buffered: poll() cannot see data that
+             * stdio has read ahead, so a burst of commands must be consumed in one go. */
             char line[1024];
-            if (fgets(line, sizeof(line), stdin)) {
-                /* Strip newline */
+            while (fgets(line, sizeof(line), stdin)) {
                 char *nl = strchr(line, '\n');
                 if (nl) *nl = '\0';
+                if (!strcmp(line, "quit")) { running = 0; break; }
                 handle_command(obj, line);
-            } else {
-                /* EOF on stdin */
-                break;
             }
+            if (feof(stdin)) break;      /* agent went away: detach and exit */
+            clearerr(stdin);             /* EAGAIN on the non-blocking fd */
         }
     }
 

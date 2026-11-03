@@ -84,6 +84,7 @@ test:
 	python3 tests/test_state_backend.py
 	python3 tests/test_rule_matching.py
 	python3 tests/test_agent_sync.py
+	python3 tests/test_loader_protocol.py
 
 ## kernel-test — load the CO-RE object on THIS kernel and check lineage, argv capture and blocking (needs root)
 kernel-test: build-core

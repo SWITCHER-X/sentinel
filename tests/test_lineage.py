@@ -237,7 +237,7 @@ def test_lineage_blocking():
     assert root.lineage_id in A.blocked_lineages
     assert 200 in killed_pids, "Root process should be killed"
     assert 201 in killed_pids, "Direct child should be killed"
-    # Grandchild (202) is NOT killed by agent - kernel LSM handles it at exec time
+    assert 202 in killed_pids, "Grandchild must be killed too: it is already running, so exec-time blocking cannot reach it"
     print(f"  ✓ Blocked lineage IDs: {[hex(x) for x in A.blocked_lineages]}")
     print(f"  ✓ Root lineage blocked: {root.lineage_id:#x}")
     print(f"  ✓ Killed PIDs: {killed_pids}")
@@ -395,23 +395,11 @@ def test_e2e_simulation():
     # Block entire attack tree from root using agent's block_lineage
     A.block_lineage(shell.lineage_id, A.Rule(id=0, name="Test block", pattern=""))
 
-    # Agent's block_lineage adds the root lineage_id to blocked_lineages
-    # and kills processes with matching lineage_id or parent_lineage_id.
-    # The kernel's LSM hook (bprm_check_security) handles grandchildren
-    # at exec time by checking if parent's lineage is blocked.
-    assert shell.lineage_id in A.blocked_lineages, "Root lineage should be blocked"
-    print(f"  ✓ Attack root lineage blocked: {shell.lineage_id:#x}")
-
-    # Verify root and direct children are flagged as blocked
-    # (kernel will handle deeper descendants at exec time)
-    root_blocked = shell.lineage_id in A.blocked_lineages
-    python_blocked = python.parent_lineage_id in A.blocked_lineages
-    assert root_blocked and python_blocked, "Root and direct children should be blocked"
-    print(f"  ✓ Root and direct children flagged for blocking")
-
-    # Note: malware (grandchild) and revshell (great-grandchild) will be
-    # blocked by kernel LSM at exec time, since their parent's
-    # lineage is in blocked_lineages. The agent doesn't pre-mark them.
+    # Every process in the attack tree must be blocked, not only the root and its direct children.
+    for e in [shell, python, malware, revshell]:
+        is_blocked = e.lineage_id in A.blocked_lineages or e.parent_lineage_id in A.blocked_lineages
+        assert is_blocked, f"Process {e.pid} ({e.comm}) should be blocked"
+    print(f"  ✓ Entire attack lineage blocked ({len(A.blocked_lineages)} lineage IDs)")
     print(f"  ✓ Kernel LSM will block grandchildren at exec time")
 
 

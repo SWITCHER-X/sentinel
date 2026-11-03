@@ -6,6 +6,7 @@ Integrates with eBPF lineage module via libbpf loader for enterprise-grade proce
 
 import os
 import sys
+import select
 import signal
 import json
 import time
@@ -359,7 +360,7 @@ class KernelLoader:
         self._running = False
 
     def start(self) -> bool:
-        """Start the loader process and reader thread."""
+        """Start the loader process, wait for its first line, then start the reader thread."""
         if not os.path.exists(self.object_path):
             print(f"[-] eBPF object not found: {self.object_path}")
             return False
@@ -372,41 +373,47 @@ class KernelLoader:
                 [LOADER_BINARY, self.object_path],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=None,          # inherit: libbpf warnings reach the journal; an unread PIPE would fill and stall the loader
                 text=True,
-                bufsize=1,  # line-buffered
+                bufsize=1,
             )
         except Exception as e:
             print(f"[-] Failed to start loader: {e}")
             return False
 
+        # The first line (info or error) must be read here, before the reader thread exists.
+        # Two threads reading one pipe race for it, and losing the race blocks start() forever.
+        try:
+            ready, _, _ = select.select([self.proc.stdout], [], [], 10)
+            line = self.proc.stdout.readline() if ready else ""
+        except Exception as e:
+            print(f"[-] Failed to read loader info: {e}")
+            line = ""
+        if not line or not self._handle_info_line(line.strip()):
+            print("[-] Loader did not report ready")
+            self.stop()
+            return False
+
         self._running = True
         self.reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
         self.reader_thread.start()
-
-        # Read the info line
-        try:
-            line = self.proc.stdout.readline()
-            if line:
-                self._handle_info_line(line.strip())
-        except Exception as e:
-            print(f"[-] Failed to read loader info: {e}")
-            return False
-
         return True
 
-    def _handle_info_line(self, line: str):
-        """Parse the initial info line from loader."""
+    def alive(self) -> bool:
+        return bool(self._running and self.proc and self.proc.poll() is None)
+
+    def _handle_info_line(self, line: str) -> bool:
+        """Parse the first loader line. True only for a well-formed info line."""
         try:
             data = json.loads(line)
-            if data.get("t") == "info":
-                lsm = data.get("lsm", False)
-                programs = data.get("programs", 0)
-                print(f"[*] Loader ready: LSM={'enabled' if lsm else 'disabled'}, programs={programs}")
-            elif data.get("t") == "error":
-                print(f"[-] Loader error: {data.get('msg', 'unknown')}")
         except json.JSONDecodeError:
-            pass
+            return False
+        if data.get("t") == "info":
+            print(f"[*] Loader ready: LSM={'enabled' if data.get('lsm') else 'disabled'}, programs={data.get('programs', 0)}")
+            return True
+        if data.get("t") == "error":
+            print(f"[-] Loader error: {data.get('msg', 'unknown')}")
+        return False
 
     def _reader_loop(self):
         """Read JSON lines from loader stdout and dispatch to handlers."""
@@ -464,10 +471,12 @@ class KernelLoader:
         self.send_command(f"unblock 0x{lineage_id:016X}")
 
     def trust(self, key: bytes):
-        self.send_command(f"trust {key.hex()}")
+        # key is the 8-byte little-endian map key; the loader parses a u64 with strtoull(),
+        # so send the numeric value, not the byte string (that would byte-swap the key).
+        self.send_command(f"trust {int.from_bytes(key, 'little'):016x}")
 
     def untrust(self, key: bytes):
-        self.send_command(f"untrust {key.hex()}")
+        self.send_command(f"untrust {int.from_bytes(key, 'little'):016x}")
 
     def stop(self):
         """Stop the loader process."""
@@ -476,13 +485,17 @@ class KernelLoader:
             try:
                 self.proc.stdin.write("quit\n")
                 self.proc.stdin.flush()
+                self.proc.stdin.close()          # EOF also makes the loader exit
             except Exception:
                 pass
             try:
                 self.proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self.proc.terminate()
-                self.proc.wait(timeout=2)
+                try:
+                    self.proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    self.proc.kill()
 
 
 # ─── Utility Functions ───
@@ -732,6 +745,8 @@ def handle_exec_event(event_dict: dict):
     parent_lineage_id = event.parent_lineage_id
     comm = event.comm.decode('utf-8', 'replace').strip()
     binary_path = event.filename.decode('utf-8', 'replace').strip()
+    if binary_path:
+        comm = os.path.basename(binary_path)[:15]   # kernel comm is still the pre-exec image here
     cmdline = event.cmdline.decode('utf-8', 'replace').strip() if hasattr(event, 'cmdline') else f"{comm} {binary_path}"
 
     # Task 2: Backfill empty filename/cmdline from /proc (first exec after fork
@@ -1015,20 +1030,31 @@ def kill_process(pid: int, entry: LineageEntry, rule: Rule):
     except Exception as e:
         print(f"[-] Kill failed: {e}")
 
+def _lineage_subtree(root_id: int) -> Set[int]:
+    """Every lineage ID that descends from root_id (including root_id)."""
+    ids = {root_id}
+    changed = True
+    while changed:
+        changed = False
+        for e in list(lineage_tree.values()):
+            if e.parent_lineage_id in ids and e.lineage_id not in ids:
+                ids.add(e.lineage_id)
+                changed = True
+    return ids
+
 def block_lineage(lineage_id: int, rule: Rule):
-    """Block entire lineage tree"""
+    """Block a lineage and all of its descendants (kernel map + live processes)."""
     global blocked_lineages
-    blocked_lineages.add(lineage_id)
+    ids = _lineage_subtree(lineage_id)
+    for lid in ids:
+        blocked_lineages.add(lid)
+        try:
+            loader.block(lid)
+        except Exception as e:
+            print(f"[-] Failed to update blocked_lineages map: {e}")
 
-    # Update kernel map via loader
-    try:
-        loader.block(lineage_id)
-    except Exception as e:
-        print(f"[-] Failed to update blocked_lineages map: {e}")
-
-    # Kill all processes in this lineage
     for pid, entry in list(lineage_tree.items()):
-        if entry.lineage_id == lineage_id or entry.parent_lineage_id == lineage_id:
+        if entry.lineage_id in ids:
             try:
                 os.kill(pid, signal.SIGKILL)
                 entry.flags |= LF_KILLED
@@ -1039,7 +1065,7 @@ def block_lineage(lineage_id: int, rule: Rule):
     with stats_lock:
         stats["blocked_lineages"] += 1
 
-    print(f"[!] BLOCKED lineage {lineage_id:#x} (Rule: {rule.name})")
+    print(f"[!] BLOCKED lineage {lineage_id:#x} (+{len(ids) - 1} descendants) (Rule: {rule.name})")
 
 def quarantine_lineage(lineage_id: int, entry: LineageEntry, rule: Rule):
     """Quarantine lineage - restrict network, file access"""
@@ -1142,9 +1168,25 @@ def main():
     print("[*] Monitoring: execve, connect, openat with lineage tracking")
     print("[*] LSM hooks: task_kill (anti-tamper), file_open (sensitive files)")
 
-    # Main loop - keep alive, loader runs in background
+    # Main loop with a watchdog: if the loader dies the kernel programs detach and the agent
+    # goes blind, so restart it a few times and then exit non-zero (systemd restarts the unit).
+    restarts = 0
     while running:
         time.sleep(1)
+        if loader and not loader.alive() and running:
+            if restarts >= 3:
+                print("[-] loader keeps dying; exiting so the service manager can restart the agent")
+                sys.exit(1)
+            restarts += 1
+            print(f"[-] loader exited unexpectedly; restarting ({restarts}/3)")
+            time.sleep(2 ** restarts)
+            loader.stop()
+            if loader.start():
+                for lid in list(blocked_lineages):
+                    loader.block(lid)
+                _applied_trusted_paths.clear()      # the new kernel map is empty
+                _seed_self_trusted()
+                _sync_trusted_paths()
 
     signal_handler(signal.SIGTERM, None)
 

@@ -135,7 +135,7 @@ int main(int argc, char **argv) {
     CHECK(rc == 0, "insert path_key(/bin/true) into trusted_binaries map");
     // Fork and exec /bin/true
     pid_t trusted_c = fork();
-    if (trusted_c == 0) { execl("/bin/true", "true", (char *)NULL); _exit(127); }
+    if (trusted_c == 0) { execl("/bin/sh", "sh", "-c", "/bin/true; /bin/true", (char *)NULL); _exit(127); }   /* exec via a shell: a bare first exec after fork can arrive with an empty path (user memory not resident) */
     waitpid(trusted_c, NULL, 0); ring_buffer__poll(rb, 300);
     const struct proc_event_t *true_ev = find("/bin/true");
     CHECK(true_ev != NULL, "exec of /bin/true observed");
