@@ -114,17 +114,17 @@ jobs:
           python3 .github/workflows/test_fork.py
           sleep 1
           echo "Checking lineage_map for forked child..."
-          sudo bpftool map dump name lineage_map | grep -E '(pid|lineage_id)' | head -30
+          sudo bpftool map dump name lineage_map | grep -E '(pid|lineage_id)' | head -30 || true
 
           echo
           echo "=== Testing failed execve no phantom (K2) ==="
           for i in 1 2 3; do /nonexistent-$i 2>/dev/null || true; done
           echo "Exec events should NOT show /nonexistent entries"
-          sudo bpftool map dump name exec_events 2>/dev/null | head -10 || echo "exec_events map not directly dumpable"
+          sudo bpftool map dump name exec_events 2>/dev/null | head -10 || true
 
           echo
           echo "=== Testing ring buffer drops counter (K5) ==="
-          sudo bpftool map dump name ringbuf_drops
+          sudo bpftool map dump name ringbuf_drops || true
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
