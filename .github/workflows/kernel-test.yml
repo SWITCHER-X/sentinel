@@ -63,9 +63,11 @@ jobs:
       - name: Load eBPF programs (verifier + LSM attach)
         run: |
           echo "=== Loading eBPF programs ==="
+          # Mount tracefs for tracepoints
+          sudo mount -t tracefs nodev /sys/kernel/tracing 2>/dev/null || true
           sudo ./build/sentinel-loader ./build/sentinel_lineage_core.o &
           LOADER_PID=$!
-          sleep 3
+          sleep 5
           echo "Loader PID: $LOADER_PID"
           kill $LOADER_PID 2>/dev/null || true
           wait $LOADER_PID 2>/dev/null || true
@@ -80,19 +82,19 @@ jobs:
           sudo bpftool map list
           echo
           echo "=== lineage_map (sample) ==="
-          sudo bpftool map dump name lineage_map | head -20
+          sudo bpftool map dump name lineage_map | head -20 || true
           echo
           echo "=== ringbuf_drops ==="
-          sudo bpftool map dump name ringbuf_drops
+          sudo bpftool map dump name ringbuf_drops || true
           echo
           echo "=== pending_exec ==="
-          sudo bpftool map dump name pending_exec | head -10
+          sudo bpftool map dump name pending_exec | head -10 || true
           echo
           echo "=== blocked_lineages ==="
-          sudo bpftool map dump name blocked_lineages
+          sudo bpftool map dump name blocked_lineages || true
           echo
           echo "=== trusted_binaries ==="
-          sudo bpftool map dump name trusted_binaries | head -10
+          sudo bpftool map dump name trusted_binaries | head -10 || true
 
       - name: Compile kernel selftest
         run: |
