@@ -28,7 +28,7 @@ jobs:
             llvm \
             libbpf-dev \
             linux-headers-$(uname -r) \
-            bpftool \
+            linux-tools-$(uname -r) \
             make \
             gcc \
             git
