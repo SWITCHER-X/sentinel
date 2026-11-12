@@ -43,7 +43,7 @@ jobs:
           ls -la /sys/kernel/btf/vmlinux
           echo
           echo "=== LSM ==="
-          cat /proc/sys/kernel/lsm
+          cat /proc/sys/kernel/lsm 2>/dev/null || echo "LSM sysctl not available"
           echo
           echo "=== Config ==="
           grep -E 'CONFIG_DEBUG_INFO_BTF|CONFIG_BPF_LSM|CONFIG_BPF_SYSCALL|CONFIG_BPF_JIT' /boot/config-$(uname -r) || true
