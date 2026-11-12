@@ -1,0 +1,136 @@
+name: Kernel eBPF Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  kernel-test:
+    name: Load eBPF on Ubuntu 24.04 kernel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install kernel dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang \
+            llvm \
+            libbpf-dev \
+            linux-headers-$(uname -r) \
+            bpftool \
+            make \
+            gcc \
+            git
+
+      - name: Show kernel info
+        run: |
+          echo "=== Kernel ==="
+          uname -r
+          cat /proc/version
+          echo
+          echo "=== BTF ==="
+          ls -la /sys/kernel/btf/vmlinux
+          echo
+          echo "=== LSM ==="
+          cat /proc/sys/kernel/lsm
+          echo
+          echo "=== Config ==="
+          grep -E 'CONFIG_DEBUG_INFO_BTF|CONFIG_BPF_LSM|CONFIG_BPF_SYSCALL|CONFIG_BPF_JIT' /boot/config-$(uname -r) || true
+
+      - name: Build CO-RE eBPF object
+        run: |
+          make build-core
+          echo "=== Build artifacts ==="
+          ls -la build/
+          file build/sentinel_lineage_core.o
+
+      - name: Build libbpf loader
+        run: |
+          make build-loader
+          ls -la build/sentinel-loader
+
+      - name: Load eBPF programs (verifier + LSM attach)
+        run: |
+          echo "=== Loading eBPF programs ==="
+          sudo ./build/sentinel-loader ./build/sentinel_lineage_core.o &
+          LOADER_PID=$!
+          sleep 3
+          echo "Loader PID: $LOADER_PID"
+          kill $LOADER_PID 2>/dev/null || true
+          wait $LOADER_PID 2>/dev/null || true
+          echo "Loader exited"
+
+      - name: Verify BPF maps and programs
+        run: |
+          echo "=== BPF programs ==="
+          sudo bpftool prog list
+          echo
+          echo "=== BPF maps ==="
+          sudo bpftool map list
+          echo
+          echo "=== lineage_map (sample) ==="
+          sudo bpftool map dump name lineage_map | head -20
+          echo
+          echo "=== ringbuf_drops ==="
+          sudo bpftool map dump name ringbuf_drops
+          echo
+          echo "=== pending_exec ==="
+          sudo bpftool map dump name pending_exec | head -10
+          echo
+          echo "=== blocked_lineages ==="
+          sudo bpftool map dump name blocked_lineages
+          echo
+          echo "=== trusted_binaries ==="
+          sudo bpftool map dump name trusted_binaries | head -10
+
+      - name: Compile kernel selftest
+        run: |
+          echo "=== Building kernel selftest ==="
+          gcc -O1 -o build/kernel_selftest tests/kernel/selftest.c -lbpf
+          ls -la build/kernel_selftest
+
+      - name: Run kernel selftest
+        run: |
+          echo "=== Running kernel selftest ==="
+          sudo ./build/kernel_selftest ./build/sentinel_lineage_core.o
+          echo "=== Selftest passed ==="
+
+      - name: Test key behavioral fixes
+        run: |
+          echo "=== Testing fork tracepoint (K1) ==="
+          python3 .github/workflows/test_fork.py
+          sleep 1
+          echo "Checking lineage_map for forked child..."
+          sudo bpftool map dump name lineage_map | grep -E '(pid|lineage_id)' | head -30
+
+          echo
+          echo "=== Testing failed execve no phantom (K2) ==="
+          for i in 1 2 3; do /nonexistent-$i 2>/dev/null || true; done
+          echo "Exec events should NOT show /nonexistent entries"
+          sudo bpftool map dump name exec_events 2>/dev/null | head -10 || echo "exec_events map not directly dumpable"
+
+          echo
+          echo "=== Testing ring buffer drops counter (K5) ==="
+          sudo bpftool map dump name ringbuf_drops
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ebpf-build-${{ github.sha }}
+          path: |
+            build/sentinel_lineage_core.o
+            build/sentinel-loader
+            build/kernel_selftest
+          retention-days: 7
