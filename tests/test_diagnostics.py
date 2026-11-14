@@ -51,6 +51,8 @@ def base_kwargs(tmp_path, **over):
     lsm.write_text("lockdown,yama,integrity,apparmor,bpf")
     state = tmp_path / "state"
     state.mkdir()
+    trace = tmp_path / "tracing" / "events"
+    trace.mkdir(parents=True)
     kw = dict(
         now=1_700_000_000,
         total_events=120,
@@ -59,6 +61,7 @@ def base_kwargs(tmp_path, **over):
         env=env_ok(),
         btf_path=str(btf),
         lsm_path=str(lsm),
+        tracefs_paths=(str(tmp_path / "tracing"),),
         runner=unit_runner(healthy_units()),
         kernel_release="6.8.0-test",
     )
@@ -109,6 +112,15 @@ def test_no_telemetry_names_the_pipeline(tmp_path):
 def test_stale_telemetry(tmp_path):
     result = diag.diagnose(**base_kwargs(tmp_path, now=1_700_000_000, telemetry_last_ts=1_699_000_000))
     assert status_of(result, "telemetry.fresh") == "fail"
+    assert result["verdict"] == "fail"
+
+
+def test_missing_tracefs_names_the_actual_loader_error(tmp_path):
+    result = diag.diagnose(**base_kwargs(tmp_path, tracefs_paths=(str(tmp_path / "none"),)))
+    assert status_of(result, "kernel.tracefs") == "fail"
+    check = next(c for c in result["checks"] if c["id"] == "kernel.tracefs")
+    assert "not all programs attached" in check["detail"]
+    assert "mount -t tracefs" in check["command"]
     assert result["verdict"] == "fail"
 
 

@@ -320,13 +320,25 @@ int main(int argc, char **argv) {
 
     /* Attach programs */
     int attached = 0;
+    char failed[160] = {0};
     bpf_object__for_each_program(prog, obj) {
         if (bpf_program__autoload(prog)) {
-            if (bpf_program__attach(prog) == 0) attached++;
+            if (bpf_program__attach(prog) != NULL) {
+                attached++;
+            } else if (strlen(failed) < sizeof(failed) - 2) {
+                size_t used = strlen(failed);
+                snprintf(failed + used, sizeof(failed) - used, "%s%s",
+                         used ? "," : "", bpf_program__name(prog));
+            }
         }
     }
     if (attached != autoload_programs) {
-        print_error("not all programs attached (tracefs mounted?)");
+        char msg[256];
+        snprintf(msg, sizeof(msg),
+                 "not all programs attached (%d/%d); failed: %s "
+                 "(is tracefs mounted at /sys/kernel/tracing?)",
+                 attached, autoload_programs, failed[0] ? failed : "?");
+        print_error(msg);
         bpf_object__close(obj);
         return 1;
     }
