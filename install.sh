@@ -5,18 +5,39 @@
 #   sudo ./install.sh                        hub + agent (fresh install)
 #   sudo ./install.sh --hub-only             hub only (no eBPF agent)
 #   sudo ./install.sh --reset-credentials    rotate the dashboard password
-# Re-running an install keeps existing credentials — nothing is re-printed.
+#
+# Re-running an install keeps existing credentials and state. The script shows
+# numbered progress steps and is idempotent: it reuses the virtualenv, only
+# installs missing packages, and rebuilds the eBPF objects incrementally.
 #
 # Installs to /opt/sentinel, state in /var/lib/sentinel, config in /etc/sentinel.
 # Creates systemd services: sentinel-hub (+ sentinel-agent unless --hub-only).
 # ─────────────────────────────────────────────────────────────────────────────
-set -euo pipefail
+set -Eeuo pipefail
 
-# ─── Preconditions ───
-if [[ $EUID -ne 0 ]]; then
-  echo "[-] Run as root: sudo ./install.sh" >&2; exit 1
-fi
+trap 'echo "[-] install.sh failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
+# ─── Progress helpers ───
+STEP=0
+TOTAL=8
+INSTALL_START=$(date +%s)
+STEP_T0=$INSTALL_START
+
+step() {
+  STEP=$((STEP + 1))
+  STEP_T0=$(date +%s)
+  printf '\n[%d/%d] %s\n' "$STEP" "$TOTAL" "$*"
+}
+note() { printf '       ..  %s\n' "$*"; }
+step_ok() { printf '       ok  %s (%ss)\n' "${1:-done}" "$(( $(date +%s) - STEP_T0 ))"; }
+die() { printf '       !!  %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+  exit 0
+}
+
+# ─── Arguments ───
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HUB_ONLY=0
 RESET_CREDS=0
@@ -24,60 +45,89 @@ for arg in "$@"; do
   case "$arg" in
     --hub-only) HUB_ONLY=1 ;;
     --reset-credentials) RESET_CREDS=1 ;;
-    *) echo "[-] Unknown option: $arg (valid: --hub-only, --reset-credentials)" >&2; exit 1 ;;
+    -h|--help) usage ;;
+    *) die "unknown option: $arg (valid: --hub-only, --reset-credentials, --help)" ;;
   esac
 done
+
+[[ $EUID -eq 0 ]] || die "run as root: sudo ./install.sh"
 
 OPT=/opt/sentinel
 VARLIB=/var/lib/sentinel
 ETC=/etc/sentinel
+PORT="${SENTINEL_PORT:-5000}"
 
-echo "[*] Project SENTINEL installer"
-echo "    source : $SRC_DIR"
-echo "    target : $OPT  (state: $VARLIB, config: $ETC)"
-[[ $HUB_ONLY -eq 1 ]] && echo "    mode   : hub only (no eBPF agent)"
+printf '[*] Project SENTINEL installer\n'
+printf '    source : %s\n' "$SRC_DIR"
+printf '    target : %s  (state: %s, config: %s)\n' "$OPT" "$VARLIB" "$ETC"
+[[ $HUB_ONLY -eq 1 ]] && printf '    mode   : hub only (no eBPF agent)\n'
+
+# ─── Source preflight (fail before touching the system) ───
+REQUIRED_SRC=(Makefile requirements.txt collector/sentinel_hub_lineage.py collector/sentinel_auth.py)
+if [[ $HUB_ONLY -eq 0 ]]; then
+  REQUIRED_SRC+=(agent/sentinel_lineage_agent.py ebpf/sentinel_lineage_core.bpf.c ebpf/vmlinux.h ebpf/sentinel_loader.c)
+fi
+for f in "${REQUIRED_SRC[@]}"; do
+  [[ -e "$SRC_DIR/$f" ]] || die "source tree is incomplete: missing $f"
+done
 
 # ─── Distro detection ───
 PKG=""
-if command -v apt-get >/dev/null 2>&1; then PKG=apt
-elif command -v dnf >/dev/null 2>&1; then PKG=dnf
-elif command -v yum >/dev/null 2>&1; then PKG=yum
-elif command -v pacman >/dev/null 2>&1; then PKG=pacman
-else
-  echo "[!] Unknown package manager — install python3, python3-venv, pip manually." >&2
-fi
+for pm in apt-get dnf yum pacman zypper; do
+  if command -v "$pm" >/dev/null 2>&1; then PKG="$pm"; break; fi
+done
+[[ -n "$PKG" ]] || die "unknown package manager — install python3, python3-venv, pip, rsync, curl manually"
 
-# ─── System deps ───
-echo "[*] Installing system dependencies ($PKG)…"
+apt_install() {
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get install -y -qq --no-install-recommends "$@" >/dev/null
+}
+pacman_install() {
+  local pkgs=("$@") i
+  pacman -S --needed --noconfirm "${pkgs[@]}" >/dev/null 2>&1 && return 0
+  for i in 1 2 3; do
+    note "pacman mirror timeout (attempt $i/3) — refreshing package db"
+    pacman -Sy --noconfirm >/dev/null 2>&1 || true
+    sleep 3
+    pacman -S --needed --noconfirm "${pkgs[@]}" >/dev/null 2>&1 && return 0
+  done
+  return 1
+}
+dnf_install() { "$PKG" install -y -q "$@" >/dev/null; }
+zypper_install() { zypper --non-interactive install --no-recommends "$@" >/dev/null; }
+
+pkg_install() {
+  case "$PKG" in
+    apt-get) apt_install "$@" ;;
+    pacman)  pacman_install "$@" ;;
+    dnf|yum) dnf_install "$@" ;;
+    zypper)  zypper_install "$@" ;;
+  esac
+}
+
+# ─── [1/8] System dependencies ───
+step "Installing system dependencies ($PKG)"
+BASE_DEPS=()
 case "$PKG" in
-  apt)
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq
-    apt-get install -y -qq python3 python3-venv python3-pip rsync curl openssl >/dev/null
-    if [[ $HUB_ONLY -eq 0 ]]; then
-      apt-get install -y -qq clang llvm libbpf-dev libelf-dev gcc make >/dev/null 2>&1 \
-        || echo "[!] eBPF build toolchain not installed — the agent will not build. Install: clang llvm libbpf-dev libelf-dev gcc make"
-    fi
-    ;;
-  dnf|yum)
-    $PKG install -y -q python3 python3-pip rsync curl git openssl >/dev/null
-    [[ $HUB_ONLY -eq 0 ]] && $PKG install -y -q clang llvm libbpf-devel libelf-devel gcc make >/dev/null 2>&1 || true
-    ;;
-  pacman)
-    for attempt in 1 2 3; do
-      pacman -Sy --noconfirm --needed python python-pip rsync curl openssl >/dev/null && break
-      echo "[!] pacman mirror timeout (attempt $attempt/3) — retrying in 5s…"
-      sleep 5
-    done
-    if [[ $HUB_ONLY -eq 0 ]]; then
-      pacman -Sy --noconfirm --needed clang llvm libbpf gcc make >/dev/null 2>&1 \
-        || echo "[!] WARNING: eBPF toolchain failed to install. The hub will run, but the agent needs: sudo pacman -S clang llvm libbpf gcc make"
-    fi
-    ;;
+  apt-get) apt-get update -qq; BASE_DEPS=(python3 python3-venv python3-pip rsync curl openssl) ;;
+  pacman)  BASE_DEPS=(python python-pip rsync curl openssl) ;;
+  dnf|yum) BASE_DEPS=(python3 python3-pip rsync curl openssl git) ;;
+  zypper)  BASE_DEPS=(python3 python3-pip python3-venv rsync curl openssl) ;;
 esac
+pkg_install "${BASE_DEPS[@]}" || die "failed to install base dependencies"
+step_ok "base packages installed"
 
-# ─── Verify the build toolchain (fail early with an actionable message) ───
 if [[ $HUB_ONLY -eq 0 ]]; then
+  TOOLCHAIN=()
+  case "$PKG" in
+    apt-get) TOOLCHAIN=(clang llvm libbpf-dev libelf-dev gcc make) ;;
+    pacman)  TOOLCHAIN=(clang llvm libbpf gcc make) ;;
+    dnf|yum) TOOLCHAIN=(clang llvm libbpf-devel libelf-devel gcc make) ;;
+    zypper)  TOOLCHAIN=(clang llvm libbpf-devel libelf-devel gcc make) ;;
+  esac
+  note "installing eBPF toolchain: ${TOOLCHAIN[*]}"
+  pkg_install "${TOOLCHAIN[@]}" || note "package install had errors — verifying toolchain below"
+
   MISSING=""
   for bin in clang gcc make; do
     command -v "$bin" >/dev/null 2>&1 || MISSING="$MISSING $bin"
@@ -87,81 +137,96 @@ if [[ $HUB_ONLY -eq 0 ]]; then
     [[ -f "$d/bpf_helpers.h" ]] && BPF_HDR="$d" && break
   done
   if [[ -n "$MISSING" || -z "$BPF_HDR" ]]; then
-    echo "[-] Missing eBPF build prerequisites:${MISSING:-} ${BPF_HDR:+}"
-    [[ -z "$BPF_HDR" ]] && echo "    libbpf headers not found (need <include>/bpf/bpf_helpers.h)"
-    echo "    Debian/Ubuntu: sudo apt install clang llvm libbpf-dev libelf-dev gcc make"
-    echo "    Fedora/RHEL:   sudo dnf install clang llvm libbpf-devel libelf-devel gcc make"
-    echo "    Arch:          sudo pacman -S clang llvm libbpf gcc make"
-    echo "    Or install the hub only: sudo ./install.sh --hub-only"
+    echo "       missing:${MISSING:-}" >&2
+    if [[ -z "$BPF_HDR" ]]; then echo "       libbpf headers not found (need <include>/bpf/bpf_helpers.h)" >&2; fi
+    echo "       Debian/Ubuntu: sudo apt install clang llvm libbpf-dev libelf-dev gcc make" >&2
+    echo "       Fedora/RHEL:   sudo dnf install clang llvm libbpf-devel libelf-devel gcc make" >&2
+    echo "       Arch:          sudo pacman -S clang llvm libbpf gcc make" >&2
+    echo "       Or install the hub only: sudo ./install.sh --hub-only" >&2
     exit 1
   fi
 fi
 
-# ─── Service user ───
+# ─── [2/8] Service user + directories ───
+step "Creating service user and directories"
 if ! id sentinel >/dev/null 2>&1; then
   NOLOGIN_BIN=$(command -v nologin || echo /usr/sbin/nologin)
   useradd --system --home-dir "$VARLIB" --shell "$NOLOGIN_BIN" sentinel
-  echo "[✓] Created system user: sentinel"
+  note "created system user sentinel"
+else
+  note "system user sentinel already exists"
 fi
+install -d -m 755 "$OPT"
+install -d -m 750 -o sentinel -g sentinel "$VARLIB"
+install -d -m 750 "$ETC"
+step_ok "directories ready"
 
-# ─── Directories ───
-mkdir -p "$OPT" "$VARLIB" "$ETC"
-chown sentinel:sentinel "$VARLIB"
-chmod 750 "$VARLIB"
-echo "[✓] Directories ready"
-
-# ─── Install application ───
-echo "[*] Copying application to $OPT…"
+# ─── [3/8] Application files ───
+step "Copying application to $OPT"
 rsync -a --delete \
-  --exclude '.venv' --exclude 'build' --exclude '__pycache__' \
+  --exclude '.venv' --exclude 'build' --exclude 'dist' --exclude '__pycache__' \
   --exclude '*.pyc' --exclude 'lineage_db.json' --exclude '.git' \
   "$SRC_DIR"/ "$OPT"/
 chown -R sentinel:sentinel "$OPT"
 chmod 750 "$OPT"
+step_ok "source copied"
 
-# ─── Python venv ───
-echo "[*] Creating virtualenv and installing Python deps…"
-python3 -m venv "$OPT/.venv"
-"$OPT/.venv/bin/pip" install --quiet --upgrade pip
-"$OPT/.venv/bin/pip" install --quiet -r "$OPT/requirements.txt" \
-  || "$OPT/.venv/bin/pip" install --quiet flask pyyaml requests psutil geoip2 gunicorn
+# ─── [4/8] Python environment ───
+step "Preparing Python environment"
+export PIP_DISABLE_PIP_VERSION_CHECK=1
+if [[ -x "$OPT/.venv/bin/python" ]]; then
+  note "reusing existing virtualenv"
+else
+  note "creating virtualenv"
+  python3 -m venv "$OPT/.venv"
+fi
+[[ -x "$OPT/.venv/bin/pip" ]] || "$OPT/.venv/bin/python" -m ensurepip --upgrade >/dev/null 2>&1 || true
+note "installing requirements (this is the slowest step; cached wheels make re-runs fast)"
+if ! "$OPT/.venv/bin/pip" install --quiet --no-input -r "$OPT/requirements.txt"; then
+  note "requirements.txt failed — falling back to explicit package list"
+  "$OPT/.venv/bin/pip" install --quiet --no-input flask pyyaml requests psutil geoip2 gunicorn
+fi
 chown -R sentinel:sentinel "$OPT/.venv"
-echo "[✓] Python environment ready"
+step_ok "Python deps installed"
 
-# ─── eBPF: build the CO-RE object and the libbpf loader ───
-if [[ $HUB_ONLY -eq 0 ]]; then
-  echo "[*] Building CO-RE eBPF object and libbpf loader…"
-  if ( cd "$OPT" && make build-core build-loader ); then
-    chown -R sentinel:sentinel "$OPT/build"
+# ─── [5/8] eBPF build ───
+step "Building CO-RE eBPF object and libbpf loader"
+if [[ $HUB_ONLY -eq 1 ]]; then
+  note "skipped (hub only)"
+  step_ok "skipped"
+else
+  MAKE=(make)
+  if command -v ccache >/dev/null 2>&1; then MAKE=(make CLANG="ccache clang"); fi
+  if ( cd "$OPT" && "${MAKE[@]}" build-core build-loader >/tmp/sentinel-build.log 2>&1 ); then
     for f in "$OPT/build/sentinel_lineage_core.o" "$OPT/build/sentinel-loader"; do
-      [[ -s "$f" ]] || { echo "[-] build did not produce $f" >&2; exit 1; }
+      [[ -s "$f" ]] || { cat /tmp/sentinel-build.log >&2; die "build did not produce $f"; }
     done
-    echo "[✓] Built build/sentinel_lineage_core.o and build/sentinel-loader"
+    chown -R sentinel:sentinel "$OPT/build"
+    step_ok "built sentinel_lineage_core.o + sentinel-loader"
   else
-    echo "[-] eBPF build failed (need clang, libbpf headers and gcc)." >&2
-    echo "    The hub can still be installed with: sudo ./install.sh --hub-only" >&2
-    exit 1
+    cat /tmp/sentinel-build.log >&2
+    die "eBPF build failed — re-run with --hub-only to install just the dashboard"
   fi
 fi
 
-# ─── Config ───
+# ─── [6/8] Config + secrets ───
+step "Writing configuration and secrets"
 for f in rules.yaml geo_rules.json trusted_binaries.json; do
-  [[ -f "$OPT/config/$f" && ! -f "$ETC/$f" ]] && cp "$OPT/config/$f" "$ETC/$f"
+  if [[ -f "$OPT/config/$f" && ! -f "$ETC/$f" ]]; then cp "$OPT/config/$f" "$ETC/$f"; fi
 done
-if [[ ! -f "$ETC/sentinel.env" ]]; then
-  sed -e "s#/opt/sentinel/config#$ETC#g" \
-      -e "s#^SENTINEL_DB=.*#SENTINEL_DB=$VARLIB/lineage_db.json#" \
-      -e "s#^SENTINEL_AGENT_DB=.*#SENTINEL_AGENT_DB=$VARLIB/agent_state.json#" \
-      "$OPT/.env.example" > "$ETC/sentinel.env"
-  chmod 600 "$ETC/sentinel.env"
-else
-  echo "[=] Keeping existing $ETC/sentinel.env"
-fi
 
-# ─── Secrets (generated on fresh install; preserved on re-install) ───
 GEN_CAT=$ETC/sentinel.env
 EXISTING_INSTALL=0
 [[ -f "$GEN_CAT" ]] && EXISTING_INSTALL=1
+
+if [[ $EXISTING_INSTALL -eq 0 ]]; then
+  sed -e "s#/opt/sentinel/config#$ETC#g" \
+      -e "s#^SENTINEL_DB=.*#SENTINEL_DB=$VARLIB/lineage_db.json#" \
+      -e "s#^SENTINEL_AGENT_DB=.*#SENTINEL_AGENT_DB=$VARLIB/agent_state.json#" \
+      "$OPT/.env.example" > "$GEN_CAT"
+else
+  note "keeping existing $GEN_CAT"
+fi
 
 add_secret() {  # key value — only if absent
   grep -q "^$1=" "$GEN_CAT" || echo "$1=$2" >> "$GEN_CAT"
@@ -169,12 +234,10 @@ add_secret() {  # key value — only if absent
 
 ADMIN_PW=""
 if [[ $EXISTING_INSTALL -eq 1 && $RESET_CREDS -eq 0 ]]; then
-  echo "[=] Existing installation detected — credentials preserved"
-  echo "[=] (dashboard password: see SENTINEL_ADMIN_PASSWORD in $GEN_CAT;"
-  echo "[=]  rotate it with: sudo ./install.sh --reset-credentials)"
+  note "existing installation detected — credentials preserved"
 else
   ADMIN_PW=$(openssl rand -base64 18 2>/dev/null || head -c 24 /dev/urandom | base64)
-  add_secret "SENTINEL_ADMIN_USER"     "admin"
+  add_secret "SENTINEL_ADMIN_USER" "admin"
   if [[ $RESET_CREDS -eq 1 && $EXISTING_INSTALL -eq 1 ]]; then
     sed -i "s#^SENTINEL_ADMIN_PASSWORD=.*#SENTINEL_ADMIN_PASSWORD=$ADMIN_PW#" "$GEN_CAT"
   else
@@ -182,57 +245,48 @@ else
   fi
 fi
 
-# secrets every install must have (idempotent — only added if missing)
 add_secret "SENTINEL_AGENT_KEY"      "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p -c 64)"
 add_secret "SENTINEL_SESSION_SECRET" "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p -c 64)"
 add_secret "SENTINEL_ALLOWLIST_KEY"  "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p -c 64)"
 add_secret "SENTINEL_DB_PATH"        "$VARLIB/sentinel.db"
 chmod 600 "$GEN_CAT"
-chown root:sentinel "$GEN_CAT"
-echo "[✓] Config + secrets at $GEN_CAT (chmod 600)"
+chown root:sentinel "$GEN_CAT" 2>/dev/null || chown root:root "$GEN_CAT"
+step_ok "config in $ETC"
 
-if [[ -n "$ADMIN_PW" ]]; then
-  echo ""
-  echo "┌──────────────────────────────────────────────────────┐"
-  echo "│  DASHBOARD LOGIN (save this — shown once)            │"
-  echo "│    user: admin                                       │"
-  echo "│    pass: $ADMIN_PW"
-  echo "└──────────────────────────────────────────────────────┘"
-fi
-chown root:sentinel "$ETC"/*.env 2>/dev/null || true
-
-# ─── systemd units ───
-if ! command -v systemctl >/dev/null 2>&1; then
-  echo "[!] systemd not available — skipping services. Start manually:"
-  echo "    $OPT/.venv/bin/python $OPT/collector/sentinel_hub_lineage.py"
-  [[ $HUB_ONLY -eq 0 ]] && echo "    sudo $OPT/.venv/bin/python $OPT/agent/sentinel_lineage_agent.py"
-else
-  echo "[*] Installing systemd services…"
+# ─── [7/8] systemd services ───
+step "Installing and starting services"
+SYSTEMD=0
+if command -v systemctl >/dev/null 2>&1; then
+  SYSTEMD=1
   install -m 644 "$SRC_DIR/deploy/sentinel-hub.service" /etc/systemd/system/
   systemctl daemon-reload
   systemctl enable --now sentinel-hub
+  note "sentinel-hub enabled"
 
   if [[ $HUB_ONLY -eq 0 ]]; then
-    # Kernel prerequisites: warn, don't fail — the hub is still useful.
     [[ -f /sys/kernel/btf/vmlinux ]] \
-      || echo "[!] No /sys/kernel/btf/vmlinux — the CO-RE object cannot load (need CONFIG_DEBUG_INFO_BTF=y)."
+      || note "WARN: no /sys/kernel/btf/vmlinux — CO-RE needs CONFIG_DEBUG_INFO_BTF=y"
     grep -qw bpf /sys/kernel/security/lsm 2>/dev/null \
-      || echo "[!] 'bpf' is not in the LSM list — LSM hooks will not attach. Boot with lsm=...,bpf."
+      || note "WARN: 'bpf' not in the LSM list — LSM hooks will not attach (boot with lsm=...,bpf)"
 
     install -m 644 "$SRC_DIR/deploy/sentinel-agent.service" /etc/systemd/system/
     systemctl daemon-reload
     systemctl enable sentinel-agent 2>/dev/null || true
-    # Agent needs the hub up first; start it, but don't fail install on a headless/VM kernel
     systemctl start sentinel-agent 2>/dev/null \
-      && echo "[✓] eBPF agent started" \
-      || echo "[!] Agent did not start (no BPF support in this kernel?) — hub is still fully functional"
+      && note "sentinel-agent started" \
+      || note "WARN: sentinel-agent did not start (no BPF support?) — the hub still works"
   fi
+  step_ok "services installed"
+else
+  note "systemd not available — services skipped"
+  note "start manually: $OPT/.venv/bin/python $OPT/collector/sentinel_hub_lineage.py"
+  step_ok "skipped"
 fi
 
-# ─── Sync dashboard credentials: env file is the source of truth ───
-# (re-installs must never leave the DB row desynced from the env password)
-ADMIN_PW_SYNCED=$(grep "^SENTINEL_ADMIN_PASSWORD=" "$ETC/sentinel.env" | head -1 | cut -d= -f2-)
-ADMIN_USER_SYNCED=$(grep "^SENTINEL_ADMIN_USER=" "$ETC/sentinel.env" | head -1 | cut -d= -f2-)
+# ─── [8/8] Credentials sync + health check ───
+step "Syncing dashboard credentials and checking the hub"
+ADMIN_PW_SYNCED=$(grep "^SENTINEL_ADMIN_PASSWORD=" "$GEN_CAT" | head -1 | cut -d= -f2-)
+ADMIN_USER_SYNCED=$(grep "^SENTINEL_ADMIN_USER=" "$GEN_CAT" | head -1 | cut -d= -f2-)
 "$OPT/.venv/bin/python" - <<PYEOF
 import sys
 sys.path.insert(0, "$OPT/collector")
@@ -240,31 +294,44 @@ import os
 os.environ.setdefault("SENTINEL_DB_PATH", "$VARLIB/sentinel.db")
 import sentinel_auth as sa
 sa.ensure_user("$ADMIN_USER_SYNCED", """$ADMIN_PW_SYNCED""", reset=True)
-print("[✓] Dashboard credentials synced to database")
 PYEOF
 
-# ─── Verify (poll up to 10s — first start may lag) ───
 HUB_OK=0
-for i in 1 2 3 4 5 6 7 8 9 10; do
-  sleep 1
-  if curl -sf http://127.0.0.1:5000/api/v1/stats >/dev/null 2>&1; then HUB_OK=1; break; fi
-done
-if [[ $HUB_OK -eq 1 ]]; then
-  echo "[✓] Hub healthy → http://127.0.0.1:5000/"
+if [[ $SYSTEMD -eq 1 ]]; then
+  for _ in $(seq 1 15); do
+    if curl -sf --max-time 2 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then HUB_OK=1; break; fi
+    sleep 1
+  done
 else
-  echo "[!] Hub not responding after 10s — check: journalctl -u sentinel-hub -n 50"
+  if curl -sf --max-time 2 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then HUB_OK=1; fi
 fi
 
-cat <<EOF
+if [[ $HUB_OK -eq 1 ]]; then
+  step_ok "hub responding on :$PORT"
+else
+  note "WARN: hub not responding on :$PORT — check: journalctl -u sentinel-hub -n 50"
+  step_ok "hub not verified"
+fi
 
-─────────────────────────────────────────────────────────────
-  Project SENTINEL installed.
+# ─── Summary ───
+TOTAL_TIME=$(( $(date +%s) - INSTALL_START ))
+printf '\n─────────────────────────────────────────────────────────────\n'
+printf '  Project SENTINEL installed in %ss\n\n' "$TOTAL_TIME"
+printf '  Dashboard : http://127.0.0.1:%s/\n' "$PORT"
+printf '              (set SENTINEL_BIND=0.0.0.0 in %s to expose it; put TLS in front)\n' "$GEN_CAT"
+printf '  Config    : %s\n' "$GEN_CAT"
+printf '  State     : %s\n' "$VARLIB"
+printf '  Logs      : journalctl -u sentinel-hub -f\n'
+if [[ $HUB_ONLY -eq 0 ]]; then printf '  Agent log : journalctl -u sentinel-agent -f\n'; fi
+printf '  Uninstall : sudo %s/uninstall.sh\n' "$OPT"
 
-  Dashboard : http://127.0.0.1:5000/   (set SENTINEL_BIND=0.0.0.0 in $ETC/sentinel.env to expose it; put TLS in front)
-  Config    : $ETC/sentinel.env
-  State     : $VARLIB
-  Logs      : journalctl -u sentinel-hub -f
-EOF
-[[ $HUB_ONLY -eq 0 ]] && echo "  Agent log : journalctl -u sentinel-agent -f"
-echo "  Uninstall : sudo $OPT/uninstall.sh"
-echo "─────────────────────────────────────────────────────────────"
+if [[ -n "$ADMIN_PW" ]]; then
+  printf '\n┌──────────────────────────────────────────────────────┐\n'
+  printf '│  DASHBOARD LOGIN (save this — shown once)            │\n'
+  printf '│    user: %-45s│\n' "admin"
+  printf '│    pass: %-45s│\n' "$ADMIN_PW"
+  printf '└──────────────────────────────────────────────────────┘\n'
+else
+  printf '\n  Dashboard password: %s\n' "$GEN_CAT (SENTINEL_ADMIN_PASSWORD)"
+fi
+printf '─────────────────────────────────────────────────────────────\n'
