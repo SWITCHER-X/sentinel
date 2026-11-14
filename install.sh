@@ -55,15 +55,13 @@ case "$PKG" in
     apt-get update -qq
     apt-get install -y -qq python3 python3-venv python3-pip rsync curl >/dev/null
     if [[ $HUB_ONLY -eq 0 ]]; then
-      apt-get install -y -qq bpfcc-tools python3-bcc clang llvm libbpf-dev \
-        linux-headers-"$(uname -r)" >/dev/null 2>&1 \
-        || echo "[!] eBPF toolchain not packaged for this kernel — install manually if needed."
+      apt-get install -y -qq clang llvm libbpf-dev libelf-dev gcc make >/dev/null 2>&1 \
+        || echo "[!] eBPF build toolchain not installed — the agent will not build. Install: clang llvm libbpf-dev libelf-dev gcc make"
     fi
     ;;
   dnf|yum)
     $PKG install -y -q python3 python3-pip rsync curl git >/dev/null
-    [[ $HUB_ONLY -eq 0 ]] && $PKG install -y -q bcc-tools python3-bcc clang llvm \
-      kernel-headers kernel-devel >/dev/null 2>&1 || true
+    [[ $HUB_ONLY -eq 0 ]] && $PKG install -y -q clang llvm libbpf-devel libelf-devel gcc make >/dev/null 2>&1 || true
     ;;
   pacman)
     for attempt in 1 2 3; do
@@ -72,8 +70,8 @@ case "$PKG" in
       sleep 5
     done
     if [[ $HUB_ONLY -eq 0 ]]; then
-      pacman -Sy --noconfirm --needed bcc python-bcc clang llvm linux-headers >/dev/null 2>&1 \
-        || echo "[!] WARNING: eBPF toolchain failed to install (mirror timeout?). The hub will run, but the agent needs: sudo pacman -Sy bcc python-bcc clang llvm linux-headers"
+      pacman -Sy --noconfirm --needed clang llvm libbpf gcc make >/dev/null 2>&1 \
+        || echo "[!] WARNING: eBPF toolchain failed to install. The hub will run, but the agent needs: sudo pacman -S clang llvm libbpf gcc make"
     fi
     ;;
 esac
@@ -101,22 +99,25 @@ chmod 750 "$OPT"
 
 # ─── Python venv ───
 echo "[*] Creating virtualenv and installing Python deps…"
-# --system-site-packages: the agent imports distro BCC bindings (python-bcc),
-# which don't exist on PyPI and must come from the system package manager.
-python3 -m venv --system-site-packages "$OPT/.venv"
+python3 -m venv "$OPT/.venv"
 "$OPT/.venv/bin/pip" install --quiet --upgrade pip
-if [[ $HUB_ONLY -eq 1 ]]; then
-  "$OPT/.venv/bin/pip" install --quiet flask flask-cors pyyaml requests psutil
-else
-  "$OPT/.venv/bin/pip" install --quiet -r "$OPT/requirements.txt" \
-    || "$OPT/.venv/bin/pip" install --quiet flask flask-cors pyyaml requests psutil geoip2
-fi
-# bcc bindings come from the distro (python-bcc) — visible via --system-site-packages
-if [[ $HUB_ONLY -eq 0 ]] && ! "$OPT/.venv/bin/python" -c "import bcc" 2>/dev/null; then
-  echo "[!] WARNING: bcc bindings not importable — the eBPF agent will not start until 'python-bcc' (distro package) is installed"
-fi
+"$OPT/.venv/bin/pip" install --quiet -r "$OPT/requirements.txt" \
+  || "$OPT/.venv/bin/pip" install --quiet flask pyyaml requests psutil geoip2 gunicorn
 chown -R sentinel:sentinel "$OPT/.venv"
 echo "[✓] Python environment ready"
+
+# ─── eBPF: build the CO-RE object and the libbpf loader ───
+if [[ $HUB_ONLY -eq 0 ]]; then
+  echo "[*] Building CO-RE eBPF object and libbpf loader…"
+  if ( cd "$OPT" && make build-core build-loader ); then
+    chown -R sentinel:sentinel "$OPT/build"
+    echo "[✓] Built build/sentinel_lineage_core.o and build/sentinel-loader"
+  else
+    echo "[-] eBPF build failed (need clang, libbpf headers and gcc)." >&2
+    echo "    The hub can still be installed with: sudo ./install.sh --hub-only" >&2
+    exit 1
+  fi
+fi
 
 # ─── Config ───
 for f in rules.yaml geo_rules.json trusted_binaries.json; do
@@ -222,7 +223,7 @@ cat <<EOF
 ─────────────────────────────────────────────────────────────
   Project SENTINEL installed.
 
-  Dashboard : http://$(hostname -I 2>/dev/null | awk '{print $1}' || echo localhost):5000/
+  Dashboard : http://127.0.0.1:5000/   (set SENTINEL_BIND=0.0.0.0 in $ETC/sentinel.env to expose it; put TLS in front)
   Config    : $ETC/sentinel.env
   State     : $VARLIB
   Logs      : journalctl -u sentinel-hub -f
