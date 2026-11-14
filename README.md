@@ -63,12 +63,13 @@ lineage_id = hash(parent_lineage_id, binary_path, uid, timestamp_ns)
 - Tracepoints: `sys_enter_execve`, `sys_enter_execveat`, `sys_exit_execve`, `sys_enter_connect`, `sys_enter_openat`, `sys_enter_sendmsg`, `sched_process_exit`
 - LSM hooks: `bprm_check_security`, `task_kill`, `file_open`, `bpf`, `kernel_module_request`, `kernel_read_file`
 - Maps: lineage LRU maps (65,536 entries), `blocked_lineages`, `trusted_binaries`, per-PID DNS and data-volume counters, and five ring buffers (exec, connect, file, alert, ICMP)
-- CO-RE source (`vmlinux.h` + libbpf helpers) plus a legacy BCC source
+- CO-RE source (`vmlinux.h` + libbpf helpers); the legacy BCC source is kept for reference only and is not loaded
 
 **Agent**
-- 74 detection rules with MITRE ATT&CK tags (see [Detection rules](#detection-rules))
+- 73 detection rules with MITRE ATT&CK tags (see [Detection rules](#detection-rules))
 - Actions: log, alert, kill process and children, block lineage, quarantine
 - Learn mode that downgrades every enforcing action to a log entry
+- Protected-process safety net: PID 1, the agent, its parent shell and `sshd` are never killed; `--dry-run` (or `SENTINEL_DRY_RUN=1`) logs every would-be kill and skips kernel-map writes
 - HMAC-verified allowlist sync from the hub
 - Periodic anomaly checks for DNS query rate and data volume
 
@@ -91,7 +92,7 @@ lineage_id = hash(parent_lineage_id, binary_path, uid, timestamp_ns)
 │   ring buffers: exec · conn · file · alert · icmp                    │        │  SOC dashboard (:5000)      │
 │            │                                      ▲                  │ events │  Telegram · /metrics        │
 │            ▼                                      │ map updates      │ ─────▶ │                             │
-│  Agent (Python + BCC): tree builder · rule engine · kill / block     │ ◀───── │  mode (learn/enforce)       │
+│  Agent (Python + libbpf): tree builder · rule engine · kill / block  │ ◀───── │  mode (learn/enforce)       │
 │                                                                      │  poll  │  signed allowlist           │
 └──────────────────────────────────────────────────────────────────────┘        └─────────────────────────────┘
 ```
@@ -115,10 +116,24 @@ More detail: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 | Component | Needs |
 |---|---|
 | Hub | Python 3.10+, Flask, 256 MB RAM. Runs on any OS Python supports. |
-| Agent | x86_64 Linux, kernel 5.8+ (BPF ring buffer) with BTF (`CONFIG_DEBUG_INFO_BTF=y`), root, BCC bindings (distro package), clang/llvm, kernel headers |
+| Agent | Linux (x86_64 or aarch64), kernel 5.8+ (BPF ring buffer) with BTF (`CONFIG_DEBUG_INFO_BTF=y`), root, the `sentinel-loader` binary (libbpf); building it needs clang/llvm, libbpf headers and gcc |
 | LSM hooks | `CONFIG_BPF_LSM=y` and `bpf` in the kernel's boot-time `lsm=` list |
 
-The bundled `vmlinux.h` and the Makefile target x86_64.
+The Makefile auto-detects the BPF target architecture (`__TARGET_ARCH_x86` on
+x86_64, `__TARGET_ARCH_arm64` on aarch64); override with `make BPF_TARGET_ARCH=…`.
+The bundled `vmlinux.h` was generated on x86_64.
+
+---
+
+## Testing
+
+```bash
+pip install -r requirements-dev.txt   # pytest
+python3 -m pytest tests -q            # unit + regression tests
+python3 tools/validate_rules.py config/rules.yaml
+make build-core                       # compile the CO-RE object
+make kernel-test                      # real-kernel selftest (root, BTF, tracefs)
+```
 
 ---
 
@@ -133,9 +148,9 @@ sudo ./install.sh              # hub + eBPF agent
 sudo ./install.sh --hub-only   # dashboard and collector only
 ```
 
-The installer detects apt, dnf/yum or pacman, creates a `sentinel` system user, installs to `/opt/sentinel`, keeps state in `/var/lib/sentinel` and configuration in `/etc/sentinel`, generates secrets, and enables the systemd services. The dashboard password is printed once.
+The installer detects apt, dnf/yum or pacman, verifies the eBPF build toolchain, **builds the CO-RE object and `sentinel-loader`**, creates a `sentinel` system user, installs to `/opt/sentinel`, keeps state in `/var/lib/sentinel` and configuration in `/etc/sentinel`, generates secrets, and enables the systemd services. The dashboard password is printed once. On a kernel without BTF or BPF LSM the hub still installs; the agent logs why it cannot attach.
 
-Open `http://<host>:5000/` and sign in as `admin`.
+Open `http://127.0.0.1:5000/` and sign in as `admin`. The hub binds to loopback by default — set `SENTINEL_BIND=0.0.0.0` in `/etc/sentinel/sentinel.env` to expose it, and put TLS in front (the agent key is a plain header).
 
 To rotate the dashboard password: `sudo ./install.sh --reset-credentials`.
 
@@ -206,7 +221,7 @@ Rules live in `config/rules.yaml`, are tagged with MITRE ATT&CK techniques, and 
 | 32 | `NETWORK` | Network-event rule |
 | 64 | `FILE_WRITE` | File-integrity rule |
 
-**Coverage** (74 rules)
+**Coverage** (73 rules)
 
 | IDs | Category |
 |---|---|
@@ -233,6 +248,42 @@ python3 tools/validate_rules.py config/rules.yaml
 ```
 
 ---
+
+## Updating
+
+The dashboard header has an **UPDATE** button. The hub does not update itself
+directly: it asks a root-only systemd unit (`sentinel-update.service`) to run
+`tools/self_update.py`, and polls its status.
+
+A staged update:
+
+1. fetches `SENTINEL_UPDATE_REF` from `SENTINEL_UPDATE_REPO`,
+2. builds the CO-RE object and `sentinel-loader`,
+3. stages the tree in `/opt/sentinel.staging` and installs Python deps,
+4. boots the staged hub on a **spare port** and waits for `/health`,
+5. cuts over with `rsync` + `systemctl reload` (gunicorn `SIGHUP`: workers are
+   replaced, the listening socket is never closed — no dropped connections),
+6. verifies the live hub and records the new commit in `/opt/sentinel/.install-meta`.
+
+If the unit has no `ExecReload` yet (first update from an older install), it
+falls back to a restart. A failed verification never reaches cutover: the old
+hub keeps running and the status file reports the error.
+
+Configure it in `/etc/sentinel/sentinel.env`:
+
+```env
+SENTINEL_UPDATE_REF=master
+# SENTINEL_UPDATE_REPO=https://github.com/SWITCHER-X/sentinel.git
+# SENTINEL_UPDATE_PORT=5001          # spare port used for verification
+```
+
+Manual control:
+
+```bash
+sudo /opt/sentinel/.venv/bin/python /opt/sentinel/tools/self_update.py --check   # update available?
+sudo /opt/sentinel/.venv/bin/python /opt/sentinel/tools/self_update.py --dry-run # fetch only
+sudo /opt/sentinel/.venv/bin/python /opt/sentinel/tools/self_update.py           # update now
+```
 
 ## Learn vs. Enforce
 
@@ -284,6 +335,19 @@ All `/api/v1/*` routes require a dashboard session or the agent key, except wher
 `j` / `k` navigate · `Enter` lineage detail · `/` search · `1`–`8` severity filters · `9` all · `Ctrl+K` command palette · `Ctrl+T` theme · `b` block lineage · `t` trust · `e` export JSON · `r` refresh
 
 ---
+
+## Dashboard views
+
+The console has two views, toggled from the header pill, the `I` key, or the
+command palette:
+
+| View | What is shown |
+|---|---|
+| **Normal** (default) | calm feed: time, severity, process, one line of context. Metrics, graph and per-event detail stay out of the way. |
+| **Investigation** | full forensic row (type, action, rule, MITRE, pid, lineage, host, argv), metrics strip and lineage graph; clicking an event opens the detail drawer. |
+
+The choice is remembered in `localStorage` (`sentinel-view-mode`). Individual
+panels can still be toggled from the palette's *View* group.
 
 ## CLI
 
@@ -348,11 +412,12 @@ Project SENTINEL is **alpha** software (v1.0.0), developed and tested on Arch Li
 - **Empty cmdline fallback** — first exec after fork backfills from `/proc/<pid>/exe` and `/proc/<pid>/cmdline`
 - **Kernel alerts** — blocked lineage, BPF/module load alerts forwarded to hub as `KERNEL_ALERT`
 - **Network byte order** — `dport` converted via `ntohs`, `daddr` to dotted IP string
+- **Auth hardening** — versioned scrypt hashes (`scrypt$n$r$p$salt$hash`) that upgrade on next login, constant-work user lookup, sliding 45-minute idle sessions with a 12-hour absolute cap, `SameSite=Strict` + `HttpOnly` cookies, server-side logout revocation, exponential login lockout
 - **Agent/hub state split** — agent uses `SENTINEL_AGENT_DB`, hub uses `SENTINEL_DB`
 - **Throughput** — `hash_binary` cached with `@lru_cache`, telemetry sent from async worker queue (10k max, drop counter logged)
 
 ### ⚠️ Remaining gaps
-- **Unblock command** — operator blocks from dashboard are pushed to agent (signed directive, applied in Enforce mode); no unblock command yet
+- **Unblock command** — operator blocks and unblocks from the dashboard are pushed to the agent (signed directive, applied in Enforce mode); `sentinelctl lineage unblock --lineage-id 0x…`
 - **Network detectors** — DNS-rate, geo-blocking, data-volume checks are stubbed (loader doesn't expose `dns_queries`/`data_volume` maps yet); `icmp_events` removed (nothing emits it)
 - **Hub scale** — state backend pluggable (`collector/state.py`). In-memory default (single gunicorn worker `-w 1`). Set `SENTINEL_REDIS_URL` to use Redis and scale workers
 - **Rule 5006 removed** — was noisy (alerted on every `ls`/`ps`/`top`); can be re-added with a real pattern

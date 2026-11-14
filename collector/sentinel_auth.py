@@ -69,6 +69,9 @@ CREATE TABLE IF NOT EXISTS audit (
 CREATE TABLE IF NOT EXISTS users (
   username TEXT PRIMARY KEY, pw_hash TEXT NOT NULL, created_at REAL
 );
+CREATE TABLE IF NOT EXISTS revoked_sessions (
+  jti TEXT PRIMARY KEY, exp REAL
+);
 """
 
 
@@ -125,25 +128,79 @@ def audit(actor, action, detail=""):
 
 
 # ─── Passwords (scrypt — stdlib, no deps) ───
-def hash_password(password: str) -> str:
+# PHC-style: scrypt$n$r$p$salt$hash. Parameters travel with the hash so they can
+# be raised later; needs_rehash() upgrades an account on its next good login.
+SCRYPT_N = 2 ** 15
+SCRYPT_R = 8
+SCRYPT_P = 1
+SCRYPT_MAXMEM = 128 * 1024 * 1024
+MIN_PASSWORD_LEN = 12
+_LEGACY_N = 2 ** 14
+_dummy_hash = None
+
+
+def hash_password(password: str, *, n: int = None, r: int = None, p: int = None) -> str:
+    n, r, p = n or SCRYPT_N, r or SCRYPT_R, p or SCRYPT_P
     salt = secrets.token_bytes(16)
-    h = hashlib.scrypt(password.encode(), salt=salt, n=2 ** 14, r=8, p=1, dklen=32)
-    return f"scrypt${salt.hex()}${h.hex()}"
+    digest = hashlib.scrypt(
+        password.encode(), salt=salt, n=n, r=r, p=p, dklen=32, maxmem=SCRYPT_MAXMEM
+    )
+    return f"scrypt${n}${r}${p}${salt.hex()}${digest.hex()}"
+
+
+def _parse_hash(stored: str):
+    """Return (n, r, p, salt, digest_hex) or None. Accepts the legacy 3-field form."""
+    try:
+        parts = (stored or "").split("$")
+        if not parts or parts[0] != "scrypt":
+            return None
+        if len(parts) == 6:
+            _, n, r, p, salt_hex, digest_hex = parts
+            return int(n), int(r), int(p), bytes.fromhex(salt_hex), digest_hex
+        if len(parts) == 3:  # legacy BEFORE the upgrade: scrypt$salt$hash
+            _, salt_hex, digest_hex = parts
+            return _LEGACY_N, SCRYPT_R, SCRYPT_P, bytes.fromhex(salt_hex), digest_hex
+    except (ValueError, TypeError):
+        return None
+    return None
 
 
 def verify_password(password: str, stored: str) -> bool:
-    try:
-        algo, salt_hex, h_hex = stored.split("$")
-        if algo != "scrypt":
-            return False
-        h = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt_hex),
-                           n=2 ** 14, r=8, p=1, dklen=32)
-        return hmac.compare_digest(h.hex(), h_hex)
-    except Exception:
+    parsed = _parse_hash(stored)
+    if parsed is None:
         return False
+    n, r, p, salt, digest_hex = parsed
+    try:
+        digest = hashlib.scrypt(
+            (password or "").encode(), salt=salt, n=n, r=r, p=p, dklen=32,
+            maxmem=SCRYPT_MAXMEM,
+        )
+    except (ValueError, MemoryError):
+        return False
+    return hmac.compare_digest(digest.hex(), digest_hex)
+
+
+def needs_rehash(stored: str) -> bool:
+    parsed = _parse_hash(stored)
+    if parsed is None:
+        return True
+    n, r, p, _, _ = parsed
+    return (n, r, p) != (SCRYPT_N, SCRYPT_R, SCRYPT_P)
+
+
+def _timing_dummy() -> str:
+    """A throwaway hash so an unknown username costs the same as a real one."""
+    global _dummy_hash
+    if _dummy_hash is None:
+        _dummy_hash = hash_password(secrets.token_hex(16))
+    return _dummy_hash
 
 
 def ensure_user(username: str, password: str, reset: bool = False):
+    if not username:
+        raise ValueError("username is required")
+    if len(password or "") < MIN_PASSWORD_LEN:
+        raise ValueError(f"password must be at least {MIN_PASSWORD_LEN} characters")
     c = db()
     if reset:
         c.execute("INSERT INTO users(username,pw_hash,created_at) VALUES(?,?,?) "
@@ -157,13 +214,38 @@ def ensure_user(username: str, password: str, reset: bool = False):
     c.close()
 
 
-def check_user(username: str, password: str):
+def check_user(username: str, password: str) -> bool:
+    """Constant-work lookup: unknown users still pay one scrypt verification.
+
+    A good login with an outdated hash is rehashed with current parameters.
+    """
     row = db().execute("SELECT pw_hash FROM users WHERE username=?",
                        (username,)).fetchone()
-    return bool(row and verify_password(password, row["pw_hash"]))
+    if row is None:
+        verify_password(password or "", _timing_dummy())
+        return False
+    ok = verify_password(password or "", row["pw_hash"])
+    if ok and needs_rehash(row["pw_hash"]):
+        try:
+            c = db()
+            c.execute("UPDATE users SET pw_hash=? WHERE username=?",
+                      (hash_password(password), username))
+            c.commit()
+            c.close()
+        except sqlite3.Error:
+            pass
+    return ok
 
 
-# ─── Sessions (HMAC-signed tokens — stdlib) ───
+# ─── Sessions (HMAC-signed, stateless) ───
+# v2 token: v2.<iat>.<exp>.<idle>.<nonce>.<subject-b64>.<signature>
+#   · absolute expiry (exp) and an idle timeout (idle) are both enforced
+#   · the subject is carried in the token, so a login names a user
+SESSION_TTL = 12 * 3600           # absolute
+SESSION_IDLE_TTL = 45 * 60        # no activity for this long -> logout
+SESSION_REFRESH_AFTER = 5 * 60    # re-issue the cookie on activity
+
+
 def _secret():
     secret = os.getenv("SENTINEL_SESSION_SECRET")
     if not secret:
@@ -171,24 +253,114 @@ def _secret():
     return secret.encode()
 
 
-def session_create(ttl: int = 12 * 3600) -> str:
-    exp = int(time.time()) + ttl
-    nonce = secrets.token_hex(8)
-    body = f"{exp}.{nonce}"
-    sig = hmac.new(_secret(), body.encode(), hashlib.sha256).hexdigest()
-    return f"{body}.{sig}"
+def _sign(body: str) -> str:
+    return hmac.new(_secret(), body.encode(), hashlib.sha256).hexdigest()
+
+
+def _b64(data: bytes) -> str:
+    import base64
+
+    return base64.urlsafe_b64encode(data).decode().rstrip("=")
+
+
+def _unb64(text: str) -> bytes:
+    import base64
+
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def session_create(subject: str = "admin", ttl: int = SESSION_TTL,
+                   idle_ttl: int = SESSION_IDLE_TTL) -> str:
+    now = int(time.time())
+    body = (
+        f"v2.{now}.{now + ttl}.{idle_ttl}."
+        f"{secrets.token_hex(16)}.{_b64((subject or 'admin').encode())}"
+    )
+    return f"{body}.{_sign(body)}"
+
+
+def _is_revoked(jti: str) -> bool:
+    try:
+        return db().execute(
+            "SELECT 1 FROM revoked_sessions WHERE jti=?", (jti,)
+        ).fetchone() is not None
+    except sqlite3.Error:
+        return False
+
+
+def session_claims(token: str):
+    """Return {'sub','iat','exp','idle','jti'} for a valid token, else None."""
+    claims = _claims_unrevoked(token)
+    if claims and claims.get("jti") and _is_revoked(claims["jti"]):
+        return None
+    return claims
+
+
+def _claims_unrevoked(token: str):
+    if not token:
+        return None
+    parts = token.split(".")
+
+    if len(parts) == 7 and parts[0] == "v2":
+        body = ".".join(parts[:6])
+        if not hmac.compare_digest(_sign(body), parts[6]):
+            return None
+        try:
+            iat, exp, idle = int(parts[1]), int(parts[2]), int(parts[3])
+            subject = _unb64(parts[5]).decode() or "admin"
+        except (ValueError, UnicodeDecodeError):
+            return None
+        now = time.time()
+        if now >= exp or now - iat > idle:
+            return None
+        return {"sub": subject, "iat": iat, "exp": exp, "idle": idle, "jti": parts[4]}
+
+    if len(parts) == 3:  # v1 token issued by an older process
+        exp, nonce, sig = parts
+        if not hmac.compare_digest(_sign(f"{exp}.{nonce}"), sig):
+            return None
+        try:
+            if int(exp) <= time.time():
+                return None
+        except ValueError:
+            return None
+        return {"sub": "admin", "iat": int(time.time()), "exp": int(exp),
+                "idle": SESSION_TTL}
+
+    return None
 
 
 def session_verify(token: str) -> bool:
-    try:
-        exp, nonce, sig = token.split(".")
-        body = f"{exp}.{nonce}"
-        want = hmac.new(_secret(), body.encode(), hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(want, sig):
-            return False
-        return int(exp) > time.time()
-    except Exception:
+    return session_claims(token) is not None
+
+
+def revoke_session(token: str) -> bool:
+    """Invalidate one token server-side (logout). Survives cookie theft."""
+    claims = _claims_unrevoked(token)
+    if not claims or not claims.get("jti"):
         return False
+    if _is_revoked(claims["jti"]):
+        return False
+    try:
+        c = db()
+        c.execute("INSERT OR REPLACE INTO revoked_sessions(jti, exp) VALUES(?,?)",
+                  (claims["jti"], claims["exp"]))
+        c.execute("DELETE FROM revoked_sessions WHERE exp < ?", (time.time(),))
+        c.commit()
+        c.close()
+        return True
+    except sqlite3.Error:
+        return False
+
+
+def session_refresh(token: str):
+    """Sliding expiry: hand back a fresh token once it is old enough."""
+    claims = session_claims(token)
+    if not claims:
+        return None
+    if time.time() - claims["iat"] < SESSION_REFRESH_AFTER:
+        return token
+    return session_create(claims.get("sub") or "admin")
 
 
 def csrf_for(token: str) -> str:
@@ -251,28 +423,38 @@ def _save_user_fail(username: str, fails: int, until: float = 0.0):
         _user_failures[username] = (fails, until)
 
 
+LOCK_BASE = 30        # seconds for the 5th consecutive failure
+LOCK_MAX = 15 * 60    # cap for repeated failures
+
+
+def _lockout_seconds(fails: int) -> int:
+    return min(LOCK_BASE * (2 ** max(0, fails - 5)), LOCK_MAX)
+
+
 def login_attempts(ip: str, username: str = None):
-    """Returns (allowed, retry_after). 5 failures → 60s lockout.
-    Checks both IP and username throttling."""
+    """Returns (allowed, retry_after). 5 failures lock the IP/username out for
+    LOCK_BASE seconds, doubling on every further failure up to LOCK_MAX."""
     now = time.time()
-    
-    # Check IP throttling
+
     fails, until = _load_fail(ip)
     if until and now < until:
-        return False, int(until - now)
-    if fails >= 5:
-        _save_fail(ip, 0, now + 60)
-        return False, 60
-    
-    # Check username throttling (if username provided)
+        return False, max(1, int(until - now))
+    if fails >= 5 and not until:
+        # the 5th failure starts the lockout; after it expires one attempt is
+        # allowed and the next failure doubles the wait
+        wait = _lockout_seconds(fails)
+        _save_fail(ip, fails, now + wait)
+        return False, wait
+
     if username:
         u_fails, u_until = _load_user_fail(username)
         if u_until and now < u_until:
-            return False, int(u_until - now)
-        if u_fails >= 5:
-            _save_user_fail(username, 0, now + 60)
-            return False, 60
-    
+            return False, max(1, int(u_until - now))
+        if u_fails >= 5 and not u_until:
+            wait = _lockout_seconds(u_fails)
+            _save_user_fail(username, u_fails, now + wait)
+            return False, wait
+
     return True, 0
 
 

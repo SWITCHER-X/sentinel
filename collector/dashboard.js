@@ -5,7 +5,8 @@ class SentinelDashboard {
   constructor() {
     this.state = {
       theme: 'dark',
-      density: 'compact',
+      density: 'comfortable',
+      viewMode: 'normal',
       sidebarCollapsed: false,
       currentFilter: 'ALL',
       activeFilters: new Set(['ALL']),
@@ -169,8 +170,10 @@ class SentinelDashboard {
     try { saved = localStorage.getItem('sentinel-theme'); } catch (e) {}
     this.state.theme = saved || 'dark';
     try {
-      this.state.density = localStorage.getItem('sentinel-density') || 'compact';
+      this.state.density = 'comfortable'; /* fixed: one row rhythm in the console */
       this.state.sidebarCollapsed = localStorage.getItem('sentinel-sidebar') === '1';
+      this.state.viewMode = localStorage.getItem('sentinel-view-mode') === 'investigation'
+        ? 'investigation' : 'normal';
     } catch (e) {}
     this.applyTheme();
   }
@@ -194,6 +197,56 @@ class SentinelDashboard {
     try { localStorage.setItem('sentinel-density', this.state.density); } catch (e) {}
     this.layoutTimeline();
     this.showToast(`Density: ${this.state.density}`, 'info');
+  }
+
+  setViewMode(mode, silent = false) {
+    const inv = mode === 'investigation';
+    this.state.viewMode = inv ? 'investigation' : 'normal';
+    try { localStorage.setItem('sentinel-view-mode', this.state.viewMode); } catch (e) {}
+
+    document.body.classList.toggle('mode-investigation', inv);
+    if (!inv && this.state.detailOpen) this.closeLineageDetail();
+
+    const metrics = this.$('#mini-metrics');
+    if (metrics) metrics.classList.toggle('hidden', !inv);
+
+    const graph = this.$('#graph-panel');
+    if (graph) {
+      const wasHidden = graph.classList.contains('hidden');
+      graph.classList.toggle('hidden', !inv);
+      if (inv && wasHidden) requestAnimationFrame(() => this.renderGraph());
+    }
+
+    const btn = this.$('#view-mode-toggle');
+    if (btn) {
+      btn.textContent = inv ? 'Normal view' : 'Investigate';
+      btn.setAttribute('aria-pressed', inv ? 'true' : 'false');
+      btn.title = inv
+        ? 'Investigation: full detail, lineage graph and inspector. Click for the calm view (I).'
+        : 'Normal: scan the feed. Click for investigation detail (I).';
+    }
+
+    this.renderTimeline();
+    if (!silent) this.showToast(inv ? 'Investigation mode' : 'Normal mode', 'info');
+  }
+
+  toggleViewMode() {
+    this.setViewMode(this.state.viewMode === 'investigation' ? 'normal' : 'investigation');
+  }
+
+  toggleMetrics() {
+    const panel = this.$('#mini-metrics');
+    if (!panel) return;
+    panel.classList.toggle('hidden');
+    this.showToast(panel.classList.contains('hidden') ? 'Metrics hidden' : 'Metrics shown', 'info');
+  }
+
+  toggleGraph() {
+    const panel = this.$('#graph-panel');
+    if (!panel) return;
+    const nowHidden = panel.classList.toggle('hidden');
+    if (!nowHidden) requestAnimationFrame(() => this.renderGraph());
+    this.showToast(nowHidden ? 'Graph hidden' : 'Graph shown', 'info');
   }
 
   toggleSidebar() {
@@ -274,23 +327,15 @@ class SentinelDashboard {
 
   setConnectionStatus(status) {
     this.state.connStatus = status;
-    const el = this.els.connStatus;
+    const el = this.els.connStatus || this.$('#connection-status');
     if (!el) return;
-    const dot = el.querySelector('span');
+    el.dataset.state = status;
     const label = el.querySelectorAll('span')[1];
-    if (!dot || !label) return;
-    const map = {
-      LIVE: { color: 'var(--ok)', text: 'LIVE', pulse: true },
-      CONNECTING: { color: 'var(--high)', text: 'CONNECTING', pulse: true },
-      RECONNECTING: { color: 'var(--high)', text: 'RECONNECTING', pulse: true },
-      OFFLINE: { color: 'var(--crit)', text: 'OFFLINE', pulse: false },
-      DEGRADED: { color: 'var(--high)', text: 'DEGRADED', pulse: false }
-    };
-    const cfg = map[status] || map.OFFLINE;
-    dot.style.background = cfg.color;
-    label.textContent = cfg.text;
-    el.style.color = cfg.color;
+    if (label) {
+      label.textContent = { LIVE: 'Live', CONNECTING: 'Connecting', RECONNECTING: 'Reconnecting', DEGRADED: 'Degraded', OFFLINE: 'Offline' }[status] || 'Offline';
+    }
   }
+
 
   handleLiveEvent(log) {
     log.received_at = log.ts || (Date.now() / 1000);
@@ -333,17 +378,59 @@ class SentinelDashboard {
     } catch (e) {}
   }
 
+  // ─── Self-update (staged: new version verified on a spare port first) ───
+  async startUpdate() {
+    const ok = confirm(
+      'Install the latest version from git?\n\n' +
+      'The running hub keeps serving while the new version is fetched, built ' +
+      'and health-checked, then switches over with a reload.'
+    );
+    if (!ok) return;
+    try {
+      await this.api('/system/update', { method: 'POST' });
+      this.showToast('Update started', 'warning');
+      this.pollUpdate(true);
+    } catch (e) {
+      this.showToast(`Could not start update: ${e.message}`, 'error');
+    }
+  }
+
+  async pollUpdate(announce = false) {
+    const btn = this.$('#act-update');
+    const runningStates = ['starting', 'fetching', 'building', 'staging', 'verifying', 'cutover'];
+    try {
+      const st = await this.api('/system/update');
+      const running = runningStates.includes(st.state);
+      if (btn) {
+        btn.disabled = running;
+        btn.textContent = running ? 'UPDATING…' : 'UPDATE';
+        btn.title = `${st.state}${st.message ? ' — ' + st.message : ''}`;
+      }
+      if (running) {
+        setTimeout(() => this.pollUpdate(false), 2500);
+        return;
+      }
+      if (!announce) return;
+      if (st.state === 'done') this.showToast(`Updated to ${(st.to_commit || '').slice(0, 12)}`, 'ok');
+      else if (st.state === 'up-to-date') this.showToast('Already up to date', 'ok');
+      else if (st.state === 'failed') this.showToast(`Update failed: ${st.message}`, 'error');
+    } catch (e) {
+      if (btn) btn.disabled = false;
+    }
+  }
+
   setModeBadge(mode) {
     this.state.mode = mode;
-    const badge = this.$('#mode-badge');
+    const badge = this.els.modeBadge || this.$('#mode-badge');
     if (!badge) return;
     const learn = mode === 'learn';
-    badge.textContent = learn ? 'LEARN MODE' : 'ENFORCING';
-    badge.style.color = learn ? 'var(--high)' : 'var(--ok)';
-    badge.style.borderColor = learn ? 'var(--high)' : 'var(--ok)';
-    badge.title = learn ? 'Observe-only: threats are logged, not killed. Click to enforce.'
-                        : 'Kill-switch active. Click to switch to learn mode.';
+    badge.dataset.mode = learn ? 'learn' : 'enforce';
+    badge.textContent = learn ? 'learning' : 'enforcing';
+    badge.title = learn
+      ? 'Observing only: threats are logged, not killed. Click to enforce.'
+      : 'Kill-switch active. Click to switch to learning mode.';
   }
+
 
   async toggleMode() {
     const next = this.state.mode === 'enforce' ? 'learn' : 'enforce';
@@ -438,8 +525,14 @@ class SentinelDashboard {
     const lineages = Object.keys(this.state.lineageData).length;
     const evRate = data.events_per_sec ?? this.estimateEventRate();
     const crit = data.critical_threats ?? 0;
-    const conn = this.state.connStatus || 'OFFLINE';
-    el.textContent = `${conn} · ${hosts} host${hosts !== 1 ? 's' : ''} · ${evRate} ev/min · ${lineages} lineages · ${crit} CRITICAL`;
+    const conn = { LIVE: 'Live', CONNECTING: 'Connecting', RECONNECTING: 'Reconnecting', DEGRADED: 'Degraded', OFFLINE: 'Offline' }[this.state.connStatus] || 'Offline';
+    el.textContent = [
+      conn,
+      `${evRate} events/min`,
+      `${hosts} host${hosts !== 1 ? 's' : ''}`,
+      `${lineages} lineage${lineages !== 1 ? 's' : ''}`,
+      crit ? `${crit} critical` : null
+    ].filter(Boolean).join(' · ');
   }
 
   estimateEventRate() {
@@ -569,53 +662,54 @@ class SentinelDashboard {
 
   buildTimelineRow(log, index) {
     const sev = (log.severity || 'INFO').toUpperCase();
-    const sevClass = this.SEVERITY_CLASS[sev] || 'dim';
-    const killed = !!(log.killed || log.action === 'KILL' || (log.type === 'EXEC_THREAT' && log.killed !== false && sev === 'CRITICAL'));
-    const action = killed ? this.ACTION_BADGE.KILL
-      : this.EXFIL_TYPES.has(log.type) ? this.ACTION_BADGE.EXFIL
-      : log.type === 'GEO_BLOCK' ? this.ACTION_BADGE.GEO_BLOCK
-      : sev === 'HIGH' || sev === 'CRITICAL' ? this.ACTION_BADGE.BLOCK
-      : this.ACTION_BADGE.LOG;
+    const inv = this.state.viewMode === 'investigation';
+    const killed = !!(log.killed || log.action === 'KILL' ||
+      (log.type === 'EXEC_THREAT' && log.killed !== false && sev === 'CRITICAL'));
 
     const row = this.el('div', {
-      class: `timeline-row virtual-item flex items-center gap-2 px-2 cursor-default select-none`,
+      class: 'timeline-row event-row virtual-item',
       role: 'option',
       'aria-selected': 'false',
       'data-idx': String(index),
       'data-lineage': log.lineage_id != null ? String(log.lineage_id) : '',
-      style: {
-        background: index % 2 ? 'var(--bg)' : 'transparent',
-        borderLeft: `3px solid ${this.SEVERITY_VAR[sev] || 'var(--fg-dim)'}`,
-        borderBottom: '1px solid var(--border)',
-        fontSize: 'var(--fs-sm)'
+      onclick: () => {
+        this.selectTimelineIndex(index);
+        if (log.lineage_id != null) {
+          this.focusLineage(log.lineage_id);
+          if (inv) this.openLineageDetail(log.lineage_id);
+        }
       },
-      onclick: () => { this.selectTimelineIndex(index); if (log.lineage_id != null) this.focusLineage(log.lineage_id); },
       ondblclick: () => { if (log.lineage_id != null) this.openLineageDetail(log.lineage_id); }
     });
 
-    const time = this.el('span', { class: 'mono shrink-0 w-[68px]', text: this.fmt.time(log.received_at || log.ts), style: { color: 'var(--fg-muted)' } });
-    const sevDot = this.el('span', { class: 'shrink-0 w-2 h-2 rounded-full', style: { background: this.SEVERITY_VAR[sev] || 'var(--fg-dim)' }, title: sev });
-    const type = this.el('span', { class: `badge badge-${this.TYPE_BADGE[log.type] || 'dim'} shrink-0`, text: log.type || 'EVENT' });
-    const actionB = this.el('span', { class: `badge ${action.cls} shrink-0`, text: action.text });
-    const rule = this.el('span', { class: 'mono shrink-0 max-w-[140px] truncate', text: log.rule_id || log.rule_name || '—', style: { color: 'var(--accent)' }, title: log.rule_id || '' });
-    const mitre = (log.mitre && log.mitre.length)
-      ? this.el('span', { class: 'flex gap-1 shrink-0' }, log.mitre.slice(0, 3).map(m => this.el('span', { class: 'tag tag-mitre mono', text: m, title: 'MITRE ' + m })))
-      : this.el('span', { class: 'shrink-0 w-1' });
-    const pid = this.el('span', { class: 'mono shrink-0 w-[52px]', text: log.pid != null ? String(log.pid) : '—', style: { color: 'var(--fg-muted)' } });
+    const time = this.el('span', { class: 'ev-time', text: this.fmt.time(log.received_at || log.ts) });
+    const sevEl = this.el('span', { class: 'ev-sev', 'data-sev': sev });
+    sevEl.append(
+      this.el('span', { class: 'dot', 'aria-hidden': 'true' }),
+      this.el('span', { text: sev === 'INFO' ? 'info' : sev.toLowerCase() })
+    );
+    const proc = this.el('span', { class: 'ev-proc', text: log.comm || log.filename || '—', title: log.comm || '' });
+    const summary = this.el('span', { class: 'ev-summary', title: log.cmdline || log.binary || '' });
+    summary.appendChild(document.createTextNode(log.cmdline || log.binary || log.type || ''));
+    if (killed) summary.appendChild(this.el('span', { class: 'ev-kill', text: 'kill' }));
+
+    if (!inv) {
+      const host = this.el('span', { class: 'ev-host', text: log.host || '—', title: log.host || '' });
+      row.append(time, sevEl, proc, summary, host);
+      return row;
+    }
+
+    const rule = this.el('span', { class: 'ev-rule', text: log.rule_id || log.rule_name || '—', title: log.rule_id || '' });
+    const pid = this.el('span', { class: 'ev-pid', text: log.pid != null ? String(log.pid) : '—' });
     const lineage = this.el('span', {
-      class: 'mono shrink-0 w-[92px] truncate cursor-pointer hover:underline',
-      text: this.fmt.shortLineage(log.lineage_id),
-      style: { color: 'var(--med)' },
+      class: 'ev-lineage', text: this.fmt.shortLineage(log.lineage_id),
       title: this.fmt.lineage(log.lineage_id),
       onclick: (e) => { e.stopPropagation(); if (log.lineage_id != null) this.focusLineage(log.lineage_id); }
     });
-    const comm = this.el('span', { class: 'mono shrink-0 max-w-[110px] truncate font-medium', text: log.comm || log.filename || '—', title: log.comm || '' });
-    const host = this.el('span', { class: 'mono shrink-0 max-w-[80px] truncate', text: log.host || '—', style: { color: 'var(--fg-muted)' }, title: log.host || '' });
-    const cmd = this.el('span', { class: 'mono truncate flex-1 min-w-0', text: log.cmdline || log.binary || '', style: { color: 'var(--fg-dim)' }, title: log.cmdline || log.binary || '' });
-
-    row.append(time, sevDot, type, actionB, rule, mitre, pid, lineage, comm, host, cmd);
+    row.append(time, sevEl, proc, rule, pid, lineage, summary);
     return row;
   }
+
 
   selectTimelineIndex(index) {
     this.state.selectedIndex = index;
@@ -671,23 +765,17 @@ class SentinelDashboard {
     container.innerHTML = '';
     for (const qf of this.QUICK_FILTERS) {
       const active = this.state.activeFilters.has(qf.id);
-      const sevColor = qf.sev ? this.SEVERITY_VAR[qf.sev] : null;
       const chip = this.el('button', {
-        class: 'mono',
         text: qf.label,
         'aria-pressed': active ? 'true' : 'false',
-        style: {
-          fontSize: '9px', padding: '2px 6px', borderRadius: '3px',
-          border: '1px solid ' + (active ? (sevColor || 'var(--accent)') : 'var(--border)'),
-          color: active ? (sevColor || 'var(--accent)') : 'var(--fg-muted)',
-          background: active ? (qf.sev === 'CRITICAL' ? 'rgba(255,59,48,0.12)' : qf.sev === 'HIGH' ? 'rgba(255,159,10,0.12)' : 'var(--bg-sunken)') : 'transparent',
-          cursor: 'pointer'
-        },
+        title: qf.sev ? `${qf.label} severity` : `Filter: ${qf.label}`,
         onclick: () => this.setFilter(qf.id)
       });
+      if (qf.sev) chip.dataset.sev = qf.sev;
       container.appendChild(chip);
     }
   }
+
 
   renderSidebar() {
     this.renderLineageList();
@@ -717,9 +805,12 @@ class SentinelDashboard {
     const entries = this.filteredLineages();
     list.innerHTML = '';
     if (entries.length === 0) {
-      list.appendChild(this.el('div', { class: 'p-3 mono', style: { color: 'var(--fg-dim)', fontSize: 'var(--fs-sm)' } }, [
-        document.createTextNode(this.state.searchQuery ? `No lineages matching "${this.state.searchQuery}"` : 'No lineages tracked — waiting for agent data')
-      ]));
+      list.appendChild(this.el('div', {
+        class: 'lineage-empty',
+        text: this.state.searchQuery
+          ? `No lineages match "${this.state.searchQuery}".`
+          : 'No lineages tracked yet. They appear when an agent reports process execution.'
+      }));
       return;
     }
     const frag = document.createDocumentFragment();
@@ -736,33 +827,25 @@ class SentinelDashboard {
     const nodeCount = Object.keys(tree.nodes || {}).length;
     const rootComm = tree.nodes?.[tree.root_pid]?.comm || tree.root_comm || 'root';
 
-    const stateBadge = blocked
-      ? this.el('span', { class: 'badge badge-crit', text: 'BLOCKED' })
-      : trusted
-        ? this.el('span', { class: 'badge badge-ok', text: 'TRUSTED' })
-        : threats > 0
-          ? this.el('span', { class: 'badge badge-high', text: `${threats} THREAT${threats > 1 ? 'S' : ''}` })
-          : this.el('span', { class: 'badge badge-dim', text: 'MONITORING' });
+    let state = { tone: 'idle', text: 'monitoring' };
+    if (blocked) state = { tone: 'blocked', text: 'blocked' };
+    else if (trusted) state = { tone: 'trusted', text: 'trusted' };
+    else if (threats > 0) state = { tone: 'threat', text: `${threats} threat${threats > 1 ? 's' : ''}` };
 
     const item = this.el('div', {
-      class: 'px-2 py-1.5 cursor-pointer',
+      class: 'lineage-item',
       'data-lineage-item': String(tree.lineage_id ?? ''),
       role: 'option',
-      style: {
-        borderBottom: '1px solid var(--border)',
-        borderLeft: `3px solid ${blocked ? 'var(--crit)' : trusted ? 'var(--ok)' : threats > 0 ? 'var(--high)' : 'transparent'}`,
-        background: 'transparent'
-      },
       onclick: () => { this.focusLineage(tree.lineage_id); this.openLineageDetail(tree.lineage_id); },
       oncontextmenu: (e) => { e.preventDefault(); this.showLineageContextMenu(e, tree.lineage_id); }
     }, [
-      this.el('div', { class: 'flex items-center justify-between gap-2' }, [
-        this.el('span', { class: 'mono truncate', text: this.fmt.shortLineage(tree.lineage_id), style: { color: 'var(--accent)', fontSize: 'var(--fs-sm)' }, title: this.fmt.lineage(tree.lineage_id) }),
-        stateBadge
+      this.el('div', { class: 'lineage-row' }, [
+        this.el('span', { class: 'lineage-id', text: this.fmt.shortLineage(tree.lineage_id), title: this.fmt.lineage(tree.lineage_id) }),
+        this.el('span', { class: 'lineage-state', 'data-tone': state.tone, text: state.text })
       ]),
-      this.el('div', { class: 'flex items-center gap-2 mono', style: { color: 'var(--fg-muted)', fontSize: '9px', marginTop: '2px' } }, [
+      this.el('div', { class: 'lineage-meta' }, [
         this.el('span', { text: `pid ${tree.root_pid ?? '—'}` }),
-        this.el('span', { text: rootComm, style: { color: 'var(--fg)' } }),
+        this.el('span', { class: 'comm', text: rootComm }),
         this.el('span', { text: `${nodeCount} proc${nodeCount !== 1 ? 's' : ''}` }),
         this.el('span', { text: tree.host || '' })
       ])
@@ -770,25 +853,27 @@ class SentinelDashboard {
     return item;
   }
 
+
   showLineageContextMenu(evt, lineageId) {
     this.removeContextMenu();
     const menu = this.el('div', {
       id: 'ctx-menu',
-      class: 'fixed z-[1001] py-1',
-      style: { background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)', borderRadius: '4px', boxShadow: '0 8px 24px rgba(0,0,0,0.4)', minWidth: '160px', left: Math.min(evt.clientX, window.innerWidth - 180) + 'px', top: Math.min(evt.clientY, window.innerHeight - 140) + 'px' },
-      role: 'menu'
+      class: 'ctx-menu',
+      role: 'menu',
+      style: {
+        left: Math.min(evt.clientX, window.innerWidth - 188) + 'px',
+        top: Math.min(evt.clientY, window.innerHeight - 170) + 'px'
+      }
     });
     const mkItem = (label, fn, danger) => this.el('button', {
-      class: 'w-full text-left px-3 py-1.5 mono',
+      class: 'ctx-item',
       text: label,
-      style: { fontSize: 'var(--fs-sm)', color: danger ? 'var(--crit)' : 'var(--fg)' },
-      onmouseenter: (e) => { e.target.style.background = 'var(--bg-sunken)'; },
-      onmouseleave: (e) => { e.target.style.background = 'transparent'; },
+      'data-danger': danger ? '1' : '0',
       onclick: () => { this.removeContextMenu(); fn(); }
     });
     menu.append(
       mkItem('Focus in graph', () => this.focusLineage(lineageId)),
-      mkItem('Open detail', () => this.openLineageDetail(lineageId)),
+      mkItem('Open inspector', () => this.openLineageDetail(lineageId)),
       mkItem('Copy lineage ID', () => { navigator.clipboard?.writeText(this.fmt.lineage(lineageId)); this.showToast('Lineage ID copied', 'success'); }),
       mkItem('Block lineage', () => this.blockLineage(lineageId), true),
       mkItem('Trust lineage', () => this.trustLineage(lineageId))
@@ -796,6 +881,7 @@ class SentinelDashboard {
     document.body.appendChild(menu);
     setTimeout(() => document.addEventListener('click', this.removeContextMenu.bind(this), { once: true }), 0);
   }
+
 
   removeContextMenu() { this.$('#ctx-menu')?.remove(); }
 
@@ -1199,6 +1285,7 @@ class SentinelDashboard {
   // ─── Command palette ───
   openCommandPalette() {
     this.state.paletteOpen = true;
+    this._focusBeforePalette = document.activeElement;
     const p = this.els.palette;
     if (!p) return;
     p.classList.remove('hidden');
@@ -1211,6 +1298,9 @@ class SentinelDashboard {
     this.state.paletteOpen = false;
     this.state.paletteIndex = -1;
     this.els.palette?.classList.add('hidden');
+    const back = this._focusBeforePalette;
+    this._focusBeforePalette = null;
+    if (back && typeof back.focus === 'function') { try { back.focus(); } catch (e) {} }
   }
 
   buildPaletteIndex() {
@@ -1240,9 +1330,13 @@ class SentinelDashboard {
       { group: 'Actions', label: 'Export visible events (JSON)', keywords: 'export json download', action: () => this.exportJSON() },
       { group: 'Actions', label: 'Block all threat lineages', keywords: 'block kill all threats', action: () => this.blockAllThreats() },
       { group: 'Actions', label: 'Toggle theme', keywords: 'theme dark light', action: () => this.toggleTheme() },
-      { group: 'Actions', label: 'Toggle density', keywords: 'density compact comfortable', action: () => this.toggleDensity() },
       { group: 'Actions', label: 'Refresh all data', keywords: 'refresh reload', action: () => this.refreshAll() },
-      { group: 'Actions', label: 'Clear feed', keywords: 'clear feed', action: () => this.clearFeed() }
+      { group: 'Actions', label: 'Clear feed', keywords: 'clear feed', action: () => this.clearFeed() },
+      { group: 'View', label: 'Normal mode (calm view)', keywords: 'normal calm simple view mode', action: () => this.setViewMode('normal') },
+      { group: 'View', label: 'Investigation mode (full detail)', keywords: 'investigation investigate deep debug view mode', action: () => this.setViewMode('investigation') },
+      { group: 'View', label: 'Toggle lineage graph', keywords: 'graph trees visualization', action: () => this.toggleGraph() },
+      { group: 'View', label: 'Toggle lineage sidebar', keywords: 'sidebar lineages list', action: () => this.toggleSidebar() },
+      { group: 'Actions', label: 'Install updates from git', keywords: 'update upgrade git deploy', action: () => this.startUpdate() }
     );
     return items;
   }
@@ -1252,27 +1346,28 @@ class SentinelDashboard {
     if (!container) return;
     const q = query.trim().toLowerCase();
     const all = this.buildPaletteIndex();
-    const results = q ? all.filter(i => i.label.toLowerCase().includes(q) || i.keywords.toLowerCase().includes(q)).slice(0, 30) : all.slice(0, 20);
+    const results = q
+      ? all.filter(i => i.label.toLowerCase().includes(q) || i.keywords.toLowerCase().includes(q)).slice(0, 30)
+      : all.slice(0, 20);
     this.state.paletteResults = results;
     this.state.paletteIndex = results.length ? 0 : -1;
     container.innerHTML = '';
     if (!results.length) {
-      container.appendChild(this.el('div', { class: 'p-3 mono', style: { color: 'var(--fg-dim)', fontSize: 'var(--fs-sm)' } }, [document.createTextNode(`No results for "${query}"`)]));
+      container.appendChild(this.el('div', { class: 'palette-empty', text: `No matches for "${query}".` }));
       return;
     }
     let lastGroup = null;
     results.forEach((item, i) => {
       if (item.group !== lastGroup) {
-        container.appendChild(this.el('div', { class: 'px-2 pt-2 pb-1 mono', style: { color: 'var(--fg-dim)', fontSize: '9px', textTransform: 'uppercase', letterSpacing: '0.5px' }, text: item.group }));
+        container.appendChild(this.el('div', { class: 'palette-group', text: item.group }));
         lastGroup = item.group;
       }
-      const selected = i === this.state.paletteIndex;
+      const active = i === this.state.paletteIndex;
       const row = this.el('div', {
-        class: 'px-3 py-1.5 cursor-pointer rounded',
+        class: `palette-item${active ? ' is-active' : ''}`,
         'data-palette-result': String(i),
         role: 'option',
-        'aria-selected': selected ? 'true' : 'false',
-        style: { fontSize: 'var(--fs-sm)', background: selected ? 'var(--bg-sunken)' : 'transparent', borderLeft: selected ? '2px solid var(--accent)' : '2px solid transparent' },
+        'aria-selected': active ? 'true' : 'false',
         onclick: () => { this.closeCommandPalette(); item.action(); },
         onmouseenter: () => { this.state.paletteIndex = i; this.renderPaletteHighlight(); }
       }, [document.createTextNode(item.label)]);
@@ -1280,16 +1375,17 @@ class SentinelDashboard {
     });
   }
 
+
   renderPaletteHighlight() {
     const rows = this.$$('[data-palette-result]', this.els.paletteResults);
     rows.forEach(r => {
-      const i = Number(r.dataset.paletteResult);
-      const on = i === this.state.paletteIndex;
-      r.style.background = on ? 'var(--bg-sunken)' : 'transparent';
-      r.style.borderLeft = on ? '2px solid var(--accent)' : '2px solid transparent';
+      const on = Number(r.dataset.paletteResult) === this.state.paletteIndex;
+      r.classList.toggle('is-active', on);
+      r.setAttribute('aria-selected', on ? 'true' : 'false');
       if (on && r.scrollIntoView) r.scrollIntoView({ block: 'nearest' });
     });
   }
+
 
   movePaletteSelection(delta) {
     const n = this.state.paletteResults.length;
@@ -1309,9 +1405,11 @@ class SentinelDashboard {
   async openLineageDetail(lineageId) {
     this.state.detailOpen = true;
     this.state.detailLineageId = lineageId;
+    this._focusBeforeDetail = document.activeElement;
     const panel = this.els.detail;
     if (!panel) return;
     panel.classList.remove('hidden');
+    this.$('#detail-close')?.focus();
     const idEl = this.$('#detail-lineage-id');
     if (idEl) idEl.textContent = this.fmt.shortLineage(lineageId);
     const content = this.els.detailContent;
@@ -1331,6 +1429,21 @@ class SentinelDashboard {
     this.state.detailOpen = false;
     this.state.detailLineageId = null;
     this.els.detail?.classList.add('hidden');
+    const back = this._focusBeforeDetail;
+    this._focusBeforeDetail = null;
+    if (back && typeof back.focus === 'function') { try { back.focus(); } catch (e) {} }
+  }
+
+  // Keep Tab inside an open modal surface (palette / detail drawer).
+  trapTab(e, container) {
+    if (!container) return;
+    const sel = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+    const items = Array.from(container.querySelectorAll(sel)).filter((el) => el.offsetParent !== null);
+    if (!items.length) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
   }
 
   renderLineageDetail(tree) {
@@ -1338,7 +1451,6 @@ class SentinelDashboard {
     if (!content) return;
     content.innerHTML = '';
 
-    // Process tree (ASCII)
     const nodes = tree.nodes || {};
     const rootPid = tree.root_pid;
     const lines = [];
@@ -1346,53 +1458,50 @@ class SentinelDashboard {
     const walk = (pid, prefix, isLast, depth) => {
       const n = nodes[pid] || Object.values(nodes).find(x => String(x.pid) === String(pid));
       if (!n) return;
-      const connector = depth === 0 ? '' : (isLast ? '└── ' : '├── ');
-      lines.push(`${prefix}${connector}${n.comm || '?'} (${n.pid})${n.severity ? ' [' + n.severity + ']' : ''}`);
+      lines.push(`${prefix}${depth === 0 ? '' : (isLast ? '└ ' : '├ ')}${n.comm || '?'} (${n.pid})`);
       const kids = childrenOf(n.pid);
-      kids.forEach((k, i) => walk(k.pid, prefix + (depth === 0 ? '' : (isLast ? '    ' : '│   ')), i === kids.length - 1, depth + 1));
+      kids.forEach((k, i) => walk(k.pid, prefix + (depth === 0 ? '' : (isLast ? '  ' : '│ ')), i === kids.length - 1, depth + 1));
     };
     if (rootPid != null && nodes[rootPid]) walk(rootPid, '', true, 0);
     else Object.values(nodes).slice(0, 50).forEach(n => lines.push(`${n.comm || '?'} (${n.pid})`));
 
-    const treeBox = this.el('pre', {
-      class: 'mono p-2 rounded overflow-x-auto',
-      style: { background: 'var(--mono-bg)', color: 'var(--mono-fg)', fontSize: 'var(--fs-sm)', lineHeight: '1.5', border: '1px solid var(--border)' },
-      text: lines.length ? lines.join('\n') : '(no process data)'
-    });
+    const section = (title, body) => this.el('div', { class: 'inspector-section' }, [
+      this.el('h3', { text: title }),
+      body
+    ]);
 
-    const events = this.state.rawLogs.filter(l => l.lineage_id != null && String(l.lineage_id) === String(tree.lineage_id)).slice(0, 100);
-    const evList = this.el('div', {}, events.map(l => this.el('div', {
-      class: 'flex items-center gap-2 py-1',
-      style: { borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-sm)' }
-    }, [
-      this.el('span', { class: 'mono shrink-0', text: this.fmt.time(l.received_at || l.ts), style: { color: 'var(--fg-muted)' } }),
-      this.el('span', { class: 'badge badge-' + (this.TYPE_BADGE[l.type] || 'dim'), text: l.type || 'EVENT' }),
-      this.el('span', { class: 'mono truncate', text: l.rule_id || l.comm || '', style: { color: 'var(--accent)' } })
+    const treeBox = this.el('pre', { class: 'inspector-tree', text: lines.length ? lines.join('\n') : '(no process data)' });
+
+    const events = this.state.rawLogs
+      .filter(l => l.lineage_id != null && String(l.lineage_id) === String(tree.lineage_id))
+      .slice(0, 100);
+    const evList = this.el('div', { class: 'inspector-events' }, events.map(l => this.el('div', { class: 'inspector-event' }, [
+      this.el('span', { class: 't', text: this.fmt.time(l.received_at || l.ts) }),
+      this.el('span', { class: 'type', text: l.type || 'event' }),
+      this.el('span', { class: 'rule', text: l.rule_id || l.comm || '—', title: l.cmdline || '' })
     ])));
+    const evBody = events.length ? evList : this.el('div', { class: 'inspector-empty', text: 'No events recorded for this lineage.' });
 
     const mitreCounts = {};
     for (const l of events) for (const m of (l.mitre || [])) mitreCounts[m] = (mitreCounts[m] || 0) + 1;
-
-    content.append(
-      this.el('div', { class: 'mono mb-1', style: { color: 'var(--fg-muted)', fontSize: '9px', textTransform: 'uppercase' }, text: 'Process Tree' }),
-      treeBox,
-      this.el('div', { class: 'mono mt-3 mb-1', style: { color: 'var(--fg-muted)', fontSize: '9px', textTransform: 'uppercase' }, text: `Events (${events.length})` }),
-      evList.children.length ? evList : this.el('div', { class: 'mono', style: { color: 'var(--fg-dim)', fontSize: 'var(--fs-sm)' }, text: 'No events for this lineage' })
+    const mitreChips = this.el('div', { class: 'mitre-chips' },
+      Object.entries(mitreCounts).map(([m, c]) => this.el('span', { text: `${m} ×${c}`, title: `${m} seen ${c} time(s)` }))
     );
 
-    if (Object.keys(mitreCounts).length) {
-      const heat = this.el('div', { class: 'flex flex-wrap gap-1 mt-1' }, Object.entries(mitreCounts).map(([m, c]) =>
-        this.el('span', { class: 'tag tag-mitre mono', text: `${m} ×${c}`, title: `MITRE ${m} seen ${c} time(s)` })));
-      content.append(this.el('div', { class: 'mono mt-3 mb-1', style: { color: 'var(--fg-muted)', fontSize: '9px', textTransform: 'uppercase' }, text: 'MITRE ATT&CK' }), heat);
-    }
-
-    const actions = this.el('div', { class: 'flex gap-2 mt-4 pt-3', style: { borderTop: '1px solid var(--border)' } }, [
-      this.el('button', { class: 'px-3 py-1.5 mono rounded', text: 'BLOCK LINEAGE', style: { background: 'rgba(255,59,48,0.15)', border: '1px solid rgba(255,59,48,0.3)', color: 'var(--crit)', fontSize: 'var(--fs-sm)' }, onclick: () => this.blockLineage(tree.lineage_id) }),
-      this.el('button', { class: 'px-3 py-1.5 mono rounded', text: 'TRUST', style: { background: 'var(--bg-sunken)', border: '1px solid var(--border)', color: 'var(--fg)', fontSize: 'var(--fs-sm)' }, onclick: () => this.trustLineage(tree.lineage_id) }),
-      this.el('button', { class: 'px-3 py-1.5 mono rounded', text: 'COPY ID', style: { background: 'var(--bg-sunken)', border: '1px solid var(--border)', color: 'var(--fg)', fontSize: 'var(--fs-sm)' }, onclick: () => { navigator.clipboard?.writeText(this.fmt.lineage(tree.lineage_id)); this.showToast('Copied', 'success'); } })
+    const actions = this.el('div', { class: 'inspector-actions' }, [
+      this.el('button', { class: 'btn-primary', text: 'Block lineage', onclick: () => this.blockLineage(tree.lineage_id) }),
+      this.el('button', { class: 'btn-secondary', text: 'Trust', onclick: () => this.trustLineage(tree.lineage_id) }),
+      this.el('button', { class: 'btn-secondary', text: 'Copy ID', onclick: () => { navigator.clipboard?.writeText(this.fmt.lineage(tree.lineage_id)); this.showToast('Lineage ID copied', 'success'); } })
     ]);
+
+    content.append(
+      section('Process tree', treeBox),
+      section(`Events (${events.length})`, evBody)
+    );
+    if (Object.keys(mitreCounts).length) content.appendChild(section('MITRE ATT&CK', mitreChips));
     content.appendChild(actions);
   }
+
 
   // ─── Actions ───
   exportJSON() {
@@ -1433,13 +1542,20 @@ class SentinelDashboard {
       if (e.key === 'ArrowDown') { e.preventDefault(); this.movePaletteSelection(1); return; }
       if (e.key === 'ArrowUp') { e.preventDefault(); this.movePaletteSelection(-1); return; }
       if (e.key === 'Enter') { e.preventDefault(); this.executePaletteSelection(); return; }
+      if (e.key === 'Tab') { this.trapTab(e, this.els.palette); return; }
       return;
+    }
+
+    if (this.state.detailOpen) {
+      if (e.key === 'Escape') { e.preventDefault(); this.closeLineageDetail(); return; }
+      if (e.key === 'Tab') { this.trapTab(e, this.els.detail); return; }
     }
 
     if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'k') { e.preventDefault(); this.openCommandPalette(); return; }
     if (e.ctrlKey && e.key.toLowerCase() === 't') { e.preventDefault(); this.toggleTheme(); return; }
     if (e.ctrlKey && e.key.toLowerCase() === 'b') { e.preventDefault(); this.toggleSidebar(); return; }
     if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'd') { e.preventDefault(); this.toggleDensity(); return; }
+    if (!e.ctrlKey && !e.metaKey && !inInput && e.key.toLowerCase() === 'i') { e.preventDefault(); this.toggleViewMode(); return; }
 
     if (inInput) {
       if (e.key === 'Escape') e.target.blur();
@@ -1518,6 +1634,10 @@ class SentinelDashboard {
   bindEvents() {
     this.els.themeToggle?.addEventListener('click', () => this.toggleTheme());
     this.$('#mode-badge')?.addEventListener('click', () => this.toggleMode());
+    this.$('#sidebar-toggle')?.addEventListener('click', () => this.toggleSidebar());
+    this.$('#view-mode-toggle')?.addEventListener('click', () => this.toggleViewMode());
+    this.$('#density-toggle')?.addEventListener('click', () => this.toggleDensity());
+    this.$('#act-update')?.addEventListener('click', () => this.startUpdate());
     this.els.paletteTrigger?.addEventListener('click', () => this.openCommandPalette());
     this.els.detailClose?.addEventListener('click', () => this.closeLineageDetail());
     this.els.actExport?.addEventListener('click', () => this.exportJSON());
@@ -1600,6 +1720,8 @@ class SentinelDashboard {
     this.renderFilterChips();
     this.bindEvents();
     this.initSession();
+    this.setViewMode(this.state.viewMode, true);
+    this.pollUpdate(false);
     this.layoutTimeline();
     this.startPolling();
     this.connectEventStream();

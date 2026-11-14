@@ -1,0 +1,9 @@
+# Project SENTINEL — development and test dependencies
+# Install: pip install -r requirements.txt -r requirements-dev.txt
+
+pytest>=8.0.0
+ruff>=0.6.0
+
+# Optional: multi-worker hub state tests
+# redis>=5.0.0
+# fakeredis>=2.23.0

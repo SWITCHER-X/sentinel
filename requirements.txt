@@ -14,7 +14,6 @@ geoip2>=4.7.0
 
 # Web framework (collector hub)
 flask>=3.0.0
-flask-cors>=4.0.0
 
 # Production WSGI server (recommended for enterprise deployments)
 gunicorn>=21.2.0

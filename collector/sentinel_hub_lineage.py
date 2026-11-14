@@ -16,6 +16,7 @@ import hmac
 import hashlib
 import urllib.request
 import functools
+import subprocess
 import threading
 from collections import defaultdict
 from flask import Flask, request, jsonify, Response, send_file, abort, redirect, make_response
@@ -40,6 +41,46 @@ sa.set_state_backend(STATE)  # share login throttling across workers when Redis 
 # TLS/cookie hardening (see TASK-002). Defaults to today's behaviour (plain HTTP);
 # SENTINEL_REQUIRE_TLS enforces Secure cookies + proxy header checks.
 SESSION_COOKIE_SECURE = os.getenv("SENTINEL_SESSION_COOKIE_SECURE", "0") == "1"
+
+SESSION_COOKIE = "sentinel_session"
+
+# ─── Self-update plumbing (tools/self_update.py writes the status file) ───
+UPDATE_STATUS_FILE = os.getenv("SENTINEL_UPDATE_STATUS", "/var/lib/sentinel/update.json")
+UPDATE_SERVICE = "sentinel-update.service"
+UPDATE_REF = os.getenv("SENTINEL_UPDATE_REF", "master")
+UPDATE_RUNNING_STATES = {"starting", "fetching", "building", "staging", "verifying", "cutover"}
+
+
+def _update_status() -> dict:
+    try:
+        with open(UPDATE_STATUS_FILE, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {"state": "idle"}
+    except (OSError, ValueError):
+        return {"state": "idle", "message": "no update has run yet"}
+
+
+def _installed_meta() -> dict:
+    out: dict = {}
+    try:
+        with open("/opt/sentinel/.install-meta", encoding="utf-8") as fh:
+            for line in fh:
+                if "=" in line:
+                    key, _, value = line.partition("=")
+                    out[key.strip()] = value.strip()
+    except OSError:
+        pass
+    return out
+
+
+def _set_session_cookie(resp, token: str):
+    """One place that decides cookie flags: HttpOnly, SameSite=Strict, TLS-aware."""
+    resp.set_cookie(
+        SESSION_COOKIE, token, httponly=True, samesite="Strict",
+        secure=SESSION_COOKIE_SECURE, max_age=sa.SESSION_TTL, path="/",
+    )
+    return resp
+
 
 # ─── Fail closed: require all secrets at boot ───
 REQUIRED_SECRETS = [
@@ -425,32 +466,91 @@ def login_page():
 @app.route("/api/v1/login", methods=["POST"])
 def api_login():
     ip = request.remote_addr or "?"
-    body = request.json or {}
-    username = body.get("username", "")
-    
-    # Check both IP and username throttling
+    body = request.get_json(silent=True) or {}
+    username = (body.get("username") or "").strip()
+    password = body.get("password") or ""
+
     allowed, retry = sa.login_attempts(ip, username)
     if not allowed:
-        return jsonify({"error": f"locked, retry in {retry}s"}), 429
-    
-    if sa.check_user(username, body.get("password", "")):
+        resp = jsonify({"error": "too many attempts", "retry_after": retry})
+        resp.headers["Retry-After"] = str(retry)
+        return resp, 429
+
+    if sa.check_user(username, password):
         sa.login_reset(ip, username)
-        tok = sa.session_create()
+        token = sa.session_create(subject=username)
         sa.audit(username, "login", f"ip={ip}")
-        resp = make_response(jsonify({"ok": True, "csrf": sa.csrf_for(tok)}))
-        resp.set_cookie("sentinel_session", tok, httponly=True, samesite="Lax",
-                        secure=SESSION_COOKIE_SECURE, max_age=12 * 3600)
+        resp = make_response(jsonify({"ok": True, "csrf": sa.csrf_for(token)}))
+        _set_session_cookie(resp, token)
+        resp.headers["Cache-Control"] = "no-store"
         return resp
-    
+
     sa.login_fail(ip, username)
+    sa.audit(username or "-", "login.failed", f"ip={ip}")
     return jsonify({"error": "invalid credentials"}), 401
 
 
 @app.route("/api/v1/logout", methods=["POST"])
 def api_logout():
+    token = request.cookies.get(SESSION_COOKIE, "")
+    claims = sa.session_claims(token)
+    if claims:
+        sa.revoke_session(token)  # server-side: a copied cookie stops working
+        sa.audit(claims.get("sub", "admin"), "logout", "")
     resp = make_response(jsonify({"ok": True}))
-    resp.delete_cookie("sentinel_session")
+    resp.delete_cookie(SESSION_COOKIE, path="/")
+    resp.headers["Cache-Control"] = "no-store"
     return resp
+
+
+@app.after_request
+def _session_and_security_headers(resp):
+    """Sliding expiry + baseline headers. Never touches the login/logout replies."""
+    if request.path.startswith("/api/"):
+        resp.headers.setdefault("Cache-Control", "no-store")
+        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    if request.path in ("/api/v1/login", "/api/v1/logout"):
+        return resp
+    token = request.cookies.get(SESSION_COOKIE, "")
+    if token:
+        claims = sa.session_claims(token)
+        if claims and time.time() - claims["iat"] >= sa.SESSION_REFRESH_AFTER:
+            _set_session_cookie(resp, sa.session_create(claims.get("sub") or "admin"))
+    return resp
+
+
+@app.route("/api/v1/system/update", methods=["GET", "POST"])
+def api_system_update():
+    """GET: update status + installed version. POST: start a staged update."""
+    token = request.cookies.get(SESSION_COOKIE, "")
+
+    if request.method == "GET":
+        if not sa.session_verify(token):
+            return jsonify({"error": "unauthorized"}), 401
+        state = _update_status()
+        return jsonify({**state, "installed": _installed_meta(), "ref": UPDATE_REF})
+
+    if not (sa.session_verify(token) and
+            sa.csrf_verify(token, request.headers.get("X-CSRF-Token", ""))):
+        return jsonify({"error": "forbidden"}), 403
+
+    state = _update_status()
+    if state.get("state") in UPDATE_RUNNING_STATES:
+        return jsonify({"error": "an update is already running", "state": state}), 409
+
+    try:
+        proc = subprocess.run(
+            ["sudo", "-n", "systemctl", "start", "--no-block", UPDATE_SERVICE],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return jsonify({"error": "cannot start the updater", "detail": str(exc)[:300]}), 503
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()[-300:]
+        return jsonify({"error": "cannot start the updater", "detail": detail}), 503
+
+    sa.audit("admin", "system.update", f"ref={UPDATE_REF}")
+    return jsonify({"ok": True, "state": "starting"}), 202
 
 
 @app.route("/api/v1/csrf", methods=["GET"])
@@ -598,6 +698,35 @@ def _admin_block_add(lineage_id: int) -> None:
     ids = _admin_blocked()
     ids.add(lineage_id)
     sa.meta_set("admin_blocked", json.dumps(sorted(f"0x{x:016X}" for x in ids)))
+    _admin_unblock_remove(lineage_id)
+
+
+def _admin_block_remove(lineage_id: int) -> None:
+    ids = _admin_blocked()
+    if lineage_id in ids:
+        ids.discard(lineage_id)
+        sa.meta_set("admin_blocked", json.dumps(sorted(f"0x{x:016X}" for x in ids)))
+
+
+def _admin_unblocked() -> set:
+    """Lineages an operator explicitly unblocked; agents poll these as commands."""
+    try:
+        return {int(x, 16) for x in json.loads(sa.meta_get("admin_unblocked", "[]"))}
+    except (ValueError, TypeError):
+        return set()
+
+
+def _admin_unblock_add(lineage_id: int) -> None:
+    ids = _admin_unblocked()
+    ids.add(lineage_id)
+    sa.meta_set("admin_unblocked", json.dumps(sorted(f"0x{x:016X}" for x in ids)))
+
+
+def _admin_unblock_remove(lineage_id: int) -> None:
+    ids = _admin_unblocked()
+    if lineage_id in ids:
+        ids.discard(lineage_id)
+        sa.meta_set("admin_unblocked", json.dumps(sorted(f"0x{x:016X}" for x in ids)))
 
 
 def _parse_lineage_id(lid):
@@ -640,6 +769,26 @@ def block_lineage(lid):
     save_lineage_db()
     sa.audit("admin", "lineage.block", f"{lineage_id:#x}")
     return jsonify({"status": "blocked", "lineage_id": f"0x{lineage_id:016X}"})
+
+
+@app.route("/api/v1/lineage/<string:lid>/unblock", methods=["POST"])
+def unblock_lineage(lid):
+    """Lift an operator block - a false positive must always be reversible."""
+    tok = request.cookies.get("sentinel_session", "")
+    if not (sa.session_verify(tok) and sa.csrf_verify(tok, request.headers.get("X-CSRF-Token", ""))):
+        return jsonify({"error": "forbidden"}), 403
+
+    lineage_id = _parse_lineage_id(lid)
+    if lineage_id is None:
+        return jsonify({"error": "invalid lineage id"}), 400
+
+    STATE.remove_blocked_lineage(lineage_id)
+    _admin_block_remove(lineage_id)
+    _admin_unblock_add(lineage_id)
+    STATE.update_lineage_tree(lineage_id, lambda t: t.__setitem__("blocked", False))
+    save_lineage_db()
+    sa.audit("admin", "lineage.unblock", f"{lineage_id:#x}")
+    return jsonify({"status": "unblocked", "lineage_id": f"0x{lineage_id:016X}"})
 
 
 @app.route("/api/v1/lineage/<string:lid>/trust", methods=["POST"])
@@ -695,6 +844,7 @@ def agent_commands():
       {"schema": 1, "server_time": <epoch float>, "revision": "<16 hex>",
        "mode": "learn" | "enforce",
        "commands": [{"type": "block_lineage", "lineage_id": "0x...", "action": "kill"},
+                    {"type": "unblock_lineage", "lineage_id": "0x..."},
                     {"type": "trust_lineage", "lineage_id": "0x..."}],
        "allowlist": [{"tier", "value", "label", "added_at", "added_by"}, ...],
        "signature": "<HMAC-SHA256 hex over the canonical JSON of every other field>"}
@@ -707,6 +857,8 @@ def agent_commands():
 
     commands = [{"type": "block_lineage", "lineage_id": f"0x{lid:016X}", "action": "kill"}
                 for lid in sorted(_admin_blocked())]
+    commands += [{"type": "unblock_lineage", "lineage_id": f"0x{lid:016X}"}
+                 for lid in sorted(_admin_unblocked())]
     commands += [{"type": "trust_lineage", "lineage_id": f"0x{lid:016X}"}
                  for lid in sorted(STATE.get_trusted_lineages())]
     body = {

@@ -303,6 +303,16 @@ class SentinelCLI:
             err(f"Failed to block lineage: {e}")
             sys.exit(1)
 
+    def unblock_lineage(self, args):
+        """Unblock a lineage"""
+        url = f'http://localhost:5000/api/v1/lineage/{args.lineage_id}/unblock'
+        try:
+            result = _request(url, method='POST')
+            ok(f"Lineage {args.lineage_id} unblocked: {result}")
+        except Exception as e:
+            err(f"Failed to unblock lineage: {e}")
+            sys.exit(1)
+
     def trust_lineage(self, args):
         """Trust a lineage"""
         url = f'http://localhost:5000/api/v1/lineage/{args.lineage_id}/trust'
@@ -501,6 +511,8 @@ Examples:
     lineage_sub.add_parser('list', help='List all lineages')
     p = lineage_sub.add_parser('block', help='Block lineage')
     p.add_argument('--lineage-id', required=True)
+    p = lineage_sub.add_parser('unblock', help='Unblock lineage')
+    p.add_argument('--lineage-id', required=True)
     p = lineage_sub.add_parser('trust', help='Trust lineage')
     p.add_argument('--lineage-id', required=True)
     p = lineage_sub.add_parser('show', help='Show lineage details')
@@ -561,6 +573,7 @@ Examples:
         lineage_map = {
             'list': cli.list_lineages,
             'block': cli.block_lineage,
+            'unblock': cli.unblock_lineage,
             'trust': cli.trust_lineage,
             'show': cli.show_lineage,
         }

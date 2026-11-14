@@ -3,70 +3,100 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark light">
 <title>SENTINEL — Sign in</title>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<script>
+  (function() {
+    try {
+      var t = localStorage.getItem('sentinel-theme');
+      if (!t) t = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  })();
+</script>
 <style>
 :root {
-  --bg: #0b0f14; --bg-elevated: #111820; --bg-sunken: #080c10;
-  --fg: #e8ecf1; --fg-muted: #6b7a8a; --fg-dim: #3d4a5a;
-  --accent: #00d4aa; --crit: #ff3b30;
-  --border: #1e2a36; --border-strong: #2d3e4e;
-  --font-ui: 'IBM Plex Sans', system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
-  --radius: 4px;
+  --ground: #101112; --surface: #151719; --sunken: #0b0c0d;
+  --line: #25292d; --line-strong: #363c43;
+  --ink: #e8e6e3; --ink-muted: #a6a39f; --ink-faint: #8a8f94;
+  --accent: #8fb0d9; --accent-soft: rgba(143,176,217,0.12);
+  --crit: #e2685f;
+  --font-ui: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --r-sm: 4px; --r-md: 6px; --dur: 140ms; --ease: cubic-bezier(0.2,0,0,1);
 }
+[data-theme="light"] {
+  --ground: #f3f1ec; --surface: #fbfaf7; --sunken: #e9e6e0;
+  --line: #dcd8d1; --line-strong: #c3beb5;
+  --ink: #17191b; --ink-muted: #54585c; --ink-faint: #777c81;
+  --accent: #3f6f9f; --accent-soft: rgba(63,111,159,0.10);
+  --crit: #a8342b;
+}
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition-duration: 0.01ms !important; } }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
-  font-family: var(--font-ui); font-size: 12px;
-  background: var(--bg); color: var(--fg);
-  min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-ui); font-size: 0.8125rem; line-height: 1.45;
+  background: var(--ground); color: var(--ink);
+  min-height: 100vh; display: grid; place-items: center; padding: 24px;
+  -webkit-font-smoothing: antialiased;
 }
+::selection { background: var(--accent-soft); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+input { caret-color: var(--accent); }
 .card {
-  width: 340px; padding: 28px;
-  background: var(--bg-elevated); border: 1px solid var(--border);
-  border-radius: var(--radius);
+  width: 100%; max-width: 360px; padding: 28px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md);
 }
-.logo { font-family: var(--font-mono); font-weight: 700; letter-spacing: 0.2em;
-  color: var(--accent); font-size: 15px; margin-bottom: 4px; }
-.sub { color: var(--fg-muted); font-size: 11px; margin-bottom: 22px; }
-label { display: block; font-size: 10px; text-transform: uppercase;
-  letter-spacing: 0.5px; color: var(--fg-muted); margin: 12px 0 4px; }
+.brand { display: flex; align-items: baseline; gap: 8px; margin-bottom: 26px; }
+.brand strong { font-size: 0.9375rem; font-weight: 650; letter-spacing: 0.02em; }
+.brand span { color: var(--ink-faint); font-size: 0.75rem; }
+label {
+  display: block; margin: 14px 0 6px;
+  color: var(--ink-muted); font-size: 0.75rem;
+}
 input {
-  width: 100%; height: 34px; padding: 0 10px;
-  background: var(--bg-sunken); border: 1px solid var(--border);
-  color: var(--fg); border-radius: var(--radius); font-family: var(--font-mono);
-  font-size: 12px;
+  width: 100%; height: 36px; padding: 0 10px;
+  background: var(--sunken); color: var(--ink);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  font: inherit;
+  transition: border-color var(--dur) var(--ease);
 }
-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(0,212,170,0.25); }
+input:hover { border-color: var(--line-strong); }
+input:focus { outline: none; border-color: var(--accent); }
 button {
-  width: 100%; height: 36px; margin-top: 18px;
-  background: var(--accent); color: #04211b; border: none; border-radius: var(--radius);
-  font-family: var(--font-mono); font-weight: 700; font-size: 11px;
-  letter-spacing: 0.1em; text-transform: uppercase; cursor: pointer;
+  width: 100%; height: 38px; margin-top: 20px;
+  background: var(--ink); color: var(--ground);
+  border: 0; border-radius: var(--r-sm);
+  font: inherit; font-weight: 600; font-size: 0.8125rem; cursor: pointer;
+  transition: opacity var(--dur) var(--ease);
 }
-button:hover { filter: brightness(1.1); }
-.err { color: var(--crit); font-size: 11px; margin-top: 12px; min-height: 14px; font-family: var(--font-mono); }
-.hint { margin-top: 16px; color: var(--fg-dim); font-size: 10px; line-height: 1.5; }
+button:hover { opacity: 0.92; }
+button:disabled { opacity: 0.55; cursor: progress; }
+.err { min-height: 18px; margin-top: 12px; color: var(--crit); font-size: 0.75rem; }
+.hint { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--ink-faint); font-size: 0.75rem; line-height: 1.5; }
+.hint code { font-family: var(--font-mono); color: var(--ink-muted); }
 </style>
 </head>
 <body>
 <div class="card">
-  <div class="logo">SENTINEL LINEAGE</div>
-  <div class="sub">Endpoint detection — authentication required</div>
+  <div class="brand"><strong>SENTINEL</strong><span>lineage EDR</span></div>
   <form id="f">
     <label for="u">Username</label>
-    <input id="u" autocomplete="username" autofocus>
+    <input id="u" name="username" autocomplete="username" autofocus spellcheck="false">
     <label for="p">Password</label>
-    <input id="p" type="password" autocomplete="current-password">
-    <button type="submit">Sign in</button>
-    <div class="err" id="e"></div>
+    <input id="p" name="password" type="password" autocomplete="current-password">
+    <button type="submit" id="submit">Sign in</button>
+    <div class="err" id="e" role="alert" aria-live="polite"></div>
   </form>
-  <div class="hint">Credentials are set at install time in<br>/etc/sentinel/sentinel.env</div>
+  <div class="hint">Credentials are set at install time in <code>/etc/sentinel/sentinel.env</code>.</div>
 </div>
 <script>
 document.getElementById('f').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   const e = document.getElementById('e');
+  const btn = document.getElementById('submit');
+  e.textContent = '';
+  btn.disabled = true;
   try {
     const r = await fetch('/api/v1/login', {
       method: 'POST',
@@ -78,9 +108,11 @@ document.getElementById('f').addEventListener('submit', async (ev) => {
     });
     if (r.ok) { location.href = '/'; return; }
     const j = await r.json().catch(() => ({}));
-    e.textContent = j.error || ('failed: ' + r.status);
+    e.textContent = j.error || ('Sign-in failed (' + r.status + '). Try again.');
   } catch (err) {
-    e.textContent = 'connection error';
+    e.textContent = 'Cannot reach the hub. Check that sentinel-hub is running.';
+  } finally {
+    btn.disabled = false;
   }
 });
 </script>

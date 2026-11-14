@@ -10,13 +10,15 @@ Covers the response structure the hub emits and how the agent verifies and appli
 Drives the real hub (Flask test client) and the real agent module (loader stubbed).
 Run: python3 tests/test_agent_sync.py
 """
+import json
 import os
 import sys
 import tempfile
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 REPO = Path(__file__).resolve().parent.parent
 _tmp = tempfile.mkdtemp(prefix="sentinel-sync-test-")
@@ -91,6 +93,81 @@ class HubDirective(unittest.TestCase):
         self.assertIn("0x000000000000AAAA", ids)
         self.assertNotIn("0x000000000000BBBB", ids)
 
+    def test_login_cookie_is_hardened_and_errors_are_generic(self):
+        c = hub.app.test_client()
+        bad = c.post("/api/v1/login", json={"username": "admin", "password": "wrong-password"})
+        self.assertEqual(bad.status_code, 401)
+        self.assertEqual(bad.get_json()["error"], "invalid credentials")
+
+        ok = c.post("/api/v1/login", json={"username": "admin", "password": "test-admin-pw"})
+        self.assertEqual(ok.status_code, 200)
+        cookie = ok.headers.get("Set-Cookie", "")
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=Strict", cookie)
+        self.assertIn("Max-Age=", cookie)
+
+        out = c.post("/api/v1/logout")
+        self.assertEqual(out.status_code, 200)
+        self.assertIn("sentinel_session=;", out.headers.get("Set-Cookie", ""))
+
+    def test_logout_revokes_the_token_server_side(self):
+        c = hub.app.test_client()
+        r = c.post("/api/v1/login", json={"username": "admin", "password": "test-admin-pw"})
+        token = r.headers["Set-Cookie"].split("sentinel_session=")[1].split(";")[0]
+        self.assertEqual(c.post("/api/v1/logout").status_code, 200)
+
+        replay = hub.app.test_client().get(
+            "/api/v1/csrf", headers={"Cookie": f"sentinel_session={token}"})
+        self.assertEqual(replay.status_code, 401)
+
+    def test_update_status_requires_a_session(self):
+        self.assertEqual(hub.app.test_client().get("/api/v1/system/update").status_code, 401)
+
+    def test_update_status_reports_installed_version(self):
+        self._admin()
+        status_file = Path(tempfile.mkdtemp()) / "update.json"
+        status_file.write_text(json.dumps({"state": "done", "message": "ok", "to_commit": "abc123"}))
+        old, hub.UPDATE_STATUS_FILE = hub.UPDATE_STATUS_FILE, str(status_file)
+        self.addCleanup(setattr, hub, "UPDATE_STATUS_FILE", old)
+        data = self.c.get("/api/v1/system/update").get_json()
+        self.assertEqual(data["state"], "done")
+        self.assertEqual(data["to_commit"], "abc123")
+        self.assertIn("installed", data)
+
+    def test_update_post_requires_csrf(self):
+        self._admin()
+        self.assertEqual(self.c.post("/api/v1/system/update", json={}).status_code, 403)
+
+    def test_update_post_starts_the_updater(self):
+        h = self._admin()
+        fake = SimpleNamespace(returncode=0, stdout="", stderr="")
+        with patch.object(hub.subprocess, "run", return_value=fake) as run:
+            r = self.c.post("/api/v1/system/update", headers=h, json={})
+        self.assertEqual(r.status_code, 202)
+        self.assertTrue(r.get_json()["ok"])
+        args = run.call_args[0][0]
+        self.assertEqual(args[:3], ["sudo", "-n", "systemctl"])
+        self.assertIn("sentinel-update.service", args)
+
+    def test_update_post_reports_a_failing_trigger(self):
+        h = self._admin()
+        fake = SimpleNamespace(returncode=1, stdout="", stderr="no sudo rule")
+        with patch.object(hub.subprocess, "run", return_value=fake):
+            r = self.c.post("/api/v1/system/update", headers=h, json={})
+        self.assertEqual(r.status_code, 503)
+        self.assertIn("no sudo rule", r.get_json()["detail"])
+
+    def test_update_post_conflicts_while_one_is_running(self):
+        h = self._admin()
+        status_file = Path(tempfile.mkdtemp()) / "update.json"
+        status_file.write_text(json.dumps({"state": "verifying"}))
+        old, hub.UPDATE_STATUS_FILE = hub.UPDATE_STATUS_FILE, str(status_file)
+        self.addCleanup(setattr, hub, "UPDATE_STATUS_FILE", old)
+        with patch.object(hub.subprocess, "run") as run:
+            r = self.c.post("/api/v1/system/update", headers=h, json={})
+        self.assertEqual(r.status_code, 409)
+        run.assert_not_called()
+
     def test_mode_change_is_reflected(self):
         h = self._admin()
         self.c.post("/api/v1/mode", json={"mode": "learn"}, headers=h)
@@ -139,6 +216,23 @@ class AgentApplies(unittest.TestCase):
         # Verify loader.block was called with the correct lineage ID
         self.mock_loader.block.assert_called_with(lid)
         self.assertIn(777, self.killed)
+
+    def test_operator_unblock_clears_kernel_map_and_set(self):
+        self.c.post("/api/v1/mode", json={"mode": "enforce"}, headers=self.h)
+        lid = 0x0BADF00D
+        A.lineage_tree[778] = A.LineageEntry(
+            lineage_id=lid, parent_lineage_id=0, pid=778, ppid=1, uid=0, gid=0, ns_pid=778,
+            comm="x", binary_path="/tmp/x", cmdline="x", exec_timestamp=0.0, flags=0, start_time=42)
+        self.c.post(f"/api/v1/lineage/{lid:#x}/block", headers=self.h)
+        self.assertTrue(A.apply_directive(self._directive()))
+        self.assertIn(lid, A.blocked_lineages)
+
+        r = self.c.post(f"/api/v1/lineage/{lid:#x}/unblock", headers=self.h)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["status"], "unblocked")
+        self.assertTrue(A.apply_directive(self._directive()))
+        self.assertNotIn(lid, A.blocked_lineages)
+        self.mock_loader.unblock.assert_any_call(lid)
 
     def test_learn_mode_does_not_block(self):
         self.c.post("/api/v1/lineage/0x5555/block", headers=self.h)

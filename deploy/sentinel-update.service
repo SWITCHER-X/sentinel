@@ -1,0 +1,19 @@
+[Unit]
+Description=Project SENTINEL — staged self-update
+Documentation=file:///opt/sentinel/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/sentinel
+EnvironmentFile=-/etc/sentinel/sentinel.env
+ExecStart=/opt/sentinel/.venv/bin/python /opt/sentinel/tools/self_update.py
+TimeoutStartSec=20min
+StandardOutput=journal
+StandardError=journal
+
+# The updater writes the app tree, the shared venv and the service itself.
+# It intentionally has no [Install]: the dashboard starts it on demand.
