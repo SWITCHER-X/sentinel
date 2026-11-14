@@ -6,6 +6,7 @@ Integrates with eBPF lineage module via libbpf loader for enterprise-grade proce
 
 import os
 import sys
+import select
 import signal
 import json
 import time
@@ -109,6 +110,24 @@ except Exception:
             term = (c + 0x9e3779b9 + (key << 6) + (key >> 2)) & ((1 << 64) - 1)
             key = (key ^ term) & ((1 << 64) - 1)
         return key.to_bytes(8, "little")
+
+
+def _is_dangerous_regex(pattern: str) -> bool:
+    """Detect regex patterns that can cause catastrophic backtracking.
+    Returns True if the pattern contains dangerous constructs."""
+    # Check for nested quantifiers: (a+)+, (a*)*, (a+)*, (a*)+, etc.
+    # Also catch (a{1,})+ and similar
+    import re as _re
+    # Pattern for nested quantifiers: ( ... )+ or ( ... )* where ... contains + or *
+    if _re.search(r'\([^)]*[\+\*\{][^)]*\)[\+\*\{]', pattern):
+        return True
+    # Check for overlapping alternation with quantifiers: (a|a)+, (a|b*)+
+    if _re.search(r'\([^)]*\|[^)]*\)[\+\*\{]', pattern):
+        return True
+    # Check for consecutive quantifiers on same group: (a+)+, (a*)*
+    if _re.search(r'\([^)]+\)[\+\*][\+\*]', pattern):
+        return True
+    return False
 
 
 def lineage_hash(parent_id: int, path: str, uid: int, ts: int) -> int:
@@ -288,6 +307,8 @@ class LineageEntry:
     children: List[int] = field(default_factory=list)
     exited: bool = False
     alerts: List[dict] = field(default_factory=list)
+    start_time: int = 0  # process start time from /proc/<pid>/stat (field 22) for PID reuse detection
+    exit_time: float = 0.0  # when the process was observed exited (for eviction logic)
 
 @dataclass
 class Rule:
@@ -325,6 +346,11 @@ stats_lock = threading.Lock()
 loader = None
 running = True
 
+# Eviction config
+LINEAGE_TREE_MAX = int(os.environ.get("SENTINEL_LINEAGE_MAX", "100000"))
+LINEAGE_BY_ID_MAX = int(os.environ.get("SENTINEL_LINEAGE_BY_ID_MAX", "200000"))
+LINEAGE_EXIT_GRACE = 60  # seconds an exited entry stays resolvable for late events
+
 # ─── Lineage Flag Constants ───
 LF_ROOT = 1 << 0
 LF_SUID = 1 << 1
@@ -359,7 +385,7 @@ class KernelLoader:
         self._running = False
 
     def start(self) -> bool:
-        """Start the loader process and reader thread."""
+        """Start the loader process, wait for its first line, then start the reader thread."""
         if not os.path.exists(self.object_path):
             print(f"[-] eBPF object not found: {self.object_path}")
             return False
@@ -372,41 +398,47 @@ class KernelLoader:
                 [LOADER_BINARY, self.object_path],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=None,          # inherit: libbpf warnings reach the journal; an unread PIPE would fill and stall the loader
                 text=True,
-                bufsize=1,  # line-buffered
+                bufsize=1,
             )
         except Exception as e:
             print(f"[-] Failed to start loader: {e}")
             return False
 
+        # The first line (info or error) must be read here, before the reader thread exists.
+        # Two threads reading one pipe race for it, and losing the race blocks start() forever.
+        try:
+            ready, _, _ = select.select([self.proc.stdout], [], [], 10)
+            line = self.proc.stdout.readline() if ready else ""
+        except Exception as e:
+            print(f"[-] Failed to read loader info: {e}")
+            line = ""
+        if not line or not self._handle_info_line(line.strip()):
+            print("[-] Loader did not report ready")
+            self.stop()
+            return False
+
         self._running = True
         self.reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
         self.reader_thread.start()
-
-        # Read the info line
-        try:
-            line = self.proc.stdout.readline()
-            if line:
-                self._handle_info_line(line.strip())
-        except Exception as e:
-            print(f"[-] Failed to read loader info: {e}")
-            return False
-
         return True
 
-    def _handle_info_line(self, line: str):
-        """Parse the initial info line from loader."""
+    def alive(self) -> bool:
+        return bool(self._running and self.proc and self.proc.poll() is None)
+
+    def _handle_info_line(self, line: str) -> bool:
+        """Parse the first loader line. True only for a well-formed info line."""
         try:
             data = json.loads(line)
-            if data.get("t") == "info":
-                lsm = data.get("lsm", False)
-                programs = data.get("programs", 0)
-                print(f"[*] Loader ready: LSM={'enabled' if lsm else 'disabled'}, programs={programs}")
-            elif data.get("t") == "error":
-                print(f"[-] Loader error: {data.get('msg', 'unknown')}")
         except json.JSONDecodeError:
-            pass
+            return False
+        if data.get("t") == "info":
+            print(f"[*] Loader ready: LSM={'enabled' if data.get('lsm') else 'disabled'}, programs={data.get('programs', 0)}")
+            return True
+        if data.get("t") == "error":
+            print(f"[-] Loader error: {data.get('msg', 'unknown')}")
+        return False
 
     def _reader_loop(self):
         """Read JSON lines from loader stdout and dispatch to handlers."""
@@ -464,10 +496,12 @@ class KernelLoader:
         self.send_command(f"unblock 0x{lineage_id:016X}")
 
     def trust(self, key: bytes):
-        self.send_command(f"trust {key.hex()}")
+        # key is the 8-byte little-endian map key; the loader parses a u64 with strtoull(),
+        # so send the numeric value, not the byte string (that would byte-swap the key).
+        self.send_command(f"trust {int.from_bytes(key, 'little'):016x}")
 
     def untrust(self, key: bytes):
-        self.send_command(f"untrust {key.hex()}")
+        self.send_command(f"untrust {int.from_bytes(key, 'little'):016x}")
 
     def stop(self):
         """Stop the loader process."""
@@ -476,24 +510,39 @@ class KernelLoader:
             try:
                 self.proc.stdin.write("quit\n")
                 self.proc.stdin.flush()
+                self.proc.stdin.close()          # EOF also makes the loader exit
             except Exception:
                 pass
             try:
                 self.proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self.proc.terminate()
-                self.proc.wait(timeout=2)
+                try:
+                    self.proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    self.proc.kill()
 
 
 # ─── Utility Functions ───
-@functools.lru_cache(maxsize=4096)
 def hash_binary(path: str) -> str:
     """Generate SHA256 hash of binary for trust verification"""
     try:
-        with open(path, "rb") as f:
-            return hashlib.sha256(f.read()).hexdigest()
-    except Exception:
+        st = os.stat(path)
+    except OSError:
         return ""
+    return _hash_cached(path, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+@functools.lru_cache(maxsize=4096)
+def _hash_cached(path: str, ino: int, size: int, mtime_ns: int) -> str:
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+    except OSError:
+        return ""
+    return h.hexdigest()
 
 def load_trusted_binaries():
     """Load trusted binary hashes from config into the config-pin set."""
@@ -510,12 +559,12 @@ def load_trusted_binaries():
             print(f"[-] Failed to load trusted binaries: {e}")
 
 def save_lineage_db():
-    """Persist lineage tree to disk"""
+    """Persist only blocked and trusted lineage IDs, not the whole process tree.
+    The tree is rebuilt from live events anyway."""
     try:
         data = {
-            "lineages": {str(k): asdict(v) for k, v in lineage_tree.items()},
-            "lineage_by_id": {str(k): asdict(v) for k, v in lineage_by_id.items()},
             "blocked_lineages": list(blocked_lineages),
+            "trusted_lineages": list(trusted_hashes),
             "saved_at": time.time()
         }
         with open(LINEAGE_DB_PATH, "w") as f:
@@ -531,12 +580,10 @@ def load_lineage_db():
     try:
         with open(LINEAGE_DB_PATH, "r") as f:
             data = json.load(f)
-        for k, v in data.get("lineages", {}).items():
-            lineage_tree[int(k)] = LineageEntry(**v)
-        for k, v in data.get("lineage_by_id", {}).items():
-            lineage_by_id[int(k)] = LineageEntry(**v)
+        # Only blocked_lineages and trusted_hashes are persisted; tree is rebuilt from live events
         blocked_lineages = set(data.get("blocked_lineages", []))
-        print(f"[*] Loaded lineage DB: {len(lineage_tree)} processes, {len(lineage_by_id)} trees, {len(blocked_lineages)} blocked")
+        # trusted_hashes are loaded from config/allowlist separately
+        print(f"[*] Loaded lineage DB: {len(blocked_lineages)} blocked lineages")
     except Exception as e:
         print(f"[-] Failed to load lineage DB: {e}")
 
@@ -571,18 +618,27 @@ def load_rules():
                     rule.flags |= RF_CMDLINE
                 if rule.flags & (RF_BINARY | RF_CMDLINE):
                     rule.flags |= RF_REGEX
+            # Validate regex patterns for catastrophic backtracking (nested quantifiers, etc.)
             if rule.pattern and (rule.flags & RF_REGEX):
-                try:
-                    rule.compiled_pattern = re.compile(rule.pattern, re.IGNORECASE)
-                except re.error:
+                if _is_dangerous_regex(rule.pattern):
+                    print(f"[!] Rule {rule.id}: pattern rejected — dangerous regex: {rule.pattern[:80]}")
                     rule.compiled_pattern = None
+                else:
+                    try:
+                        rule.compiled_pattern = re.compile(rule.pattern, re.IGNORECASE)
+                    except re.error:
+                        rule.compiled_pattern = None
             if rule.binary_pattern and (rule.flags & RF_BINARY):
-                try:
-                    # match at the start of the executable NAME, not anywhere in the path
-                    rule.compiled_binary = re.compile(
-                        r"(?:" + rule.binary_pattern + r")(?![A-Za-z0-9])", re.IGNORECASE)
-                except re.error:
+                if _is_dangerous_regex(rule.binary_pattern):
+                    print(f"[!] Rule {rule.id}: binary_pattern rejected — dangerous regex: {rule.binary_pattern[:80]}")
                     rule.compiled_binary = None
+                else:
+                    try:
+                        # match at the start of the executable NAME, not anywhere in the path
+                        rule.compiled_binary = re.compile(
+                            r"(?:" + rule.binary_pattern + r")(?![A-Za-z0-9])", re.IGNORECASE)
+                    except re.error:
+                        rule.compiled_binary = None
             rules.append(rule)
         print(f"[*] Loaded {len(rules)} detection rules")
     except Exception as e:
@@ -719,6 +775,46 @@ def _make_ns_for_event(event: dict) -> SimpleNamespace:
             setattr(ns, k, v)
     return ns
 
+def _proc_start_time(pid: int) -> int:
+    """starttime (field 22 of /proc/<pid>/stat), or 0 if the process is gone."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            # comm may contain spaces and parentheses, so split after the LAST ')'
+            return int(f.read().rsplit(")", 1)[1].split()[19])
+    except (OSError, IndexError, ValueError):
+        return 0
+
+
+def _start_time(pid: int) -> int | None:
+    """Read process start time from /proc/<pid>/stat (field 22, 1-indexed after comm)."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            # comm can contain spaces/parens, so split after the last ')'
+            return int(f.read().rsplit(")", 1)[1].split()[19])
+    except (FileNotFoundError, ProcessLookupError, IndexError, ValueError):
+        return None
+
+
+def _kill_if_same_process(pid: int, entry: LineageEntry) -> bool:
+    """Kill process only if its start_time matches (prevents PID reuse kills).
+    Entries with no recorded start_time are skipped (kernel block still applies)."""
+    if not entry.start_time:
+        return False  # no start_time recorded, cannot verify PID ownership
+    if _start_time(pid) != entry.start_time:
+        return False  # PID was recycled, do not touch it
+    try:
+        os.kill(pid, signal.SIGKILL)
+        entry.flags |= LF_KILLED
+        entry.exited = True
+        entry.exit_time = time.time()
+        return True
+    except ProcessLookupError:
+        return False
+    except Exception as e:
+        print(f"[-] Kill failed: {e}")
+        return False
+
+
 def handle_exec_event(event_dict: dict):
     """Handle process execution event from loader"""
     global stats
@@ -732,6 +828,8 @@ def handle_exec_event(event_dict: dict):
     parent_lineage_id = event.parent_lineage_id
     comm = event.comm.decode('utf-8', 'replace').strip()
     binary_path = event.filename.decode('utf-8', 'replace').strip()
+    if binary_path:
+        comm = os.path.basename(binary_path)[:15]   # kernel comm is still the pre-exec image here
     cmdline = event.cmdline.decode('utf-8', 'replace').strip() if hasattr(event, 'cmdline') else f"{comm} {binary_path}"
 
     # Task 2: Backfill empty filename/cmdline from /proc (first exec after fork
@@ -764,7 +862,8 @@ def handle_exec_event(event_dict: dict):
         binary_path=binary_path,
         cmdline=cmdline,
         exec_timestamp=time.time(),
-        flags=0  # Would come from event
+        flags=0,  # Would come from event
+        start_time=_start_time(pid) or 0,
     )
 
     # Check trusted binary
@@ -986,21 +1085,14 @@ def kill_process(pid: int, entry: LineageEntry, rule: Rule):
     """Kill process and all children in lineage"""
     try:
         # Kill the process
-        os.kill(pid, signal.SIGKILL)
-        entry.flags |= LF_KILLED
-        entry.exited = True
+        _kill_if_same_process(pid, entry)
 
         # Kill all children in lineage tree
         killed_pids = [pid]
         for child_pid in entry.children:
-            try:
-                os.kill(child_pid, signal.SIGKILL)
-                if child_pid in lineage_tree:
-                    lineage_tree[child_pid].flags |= LF_KILLED
-                    lineage_tree[child_pid].exited = True
+            child_entry = lineage_tree.get(child_pid)
+            if child_entry and _kill_if_same_process(child_pid, child_entry):
                 killed_pids.append(child_pid)
-            except ProcessLookupError:
-                pass
 
         # Block entire lineage
         block_lineage(entry.lineage_id, rule)
@@ -1010,36 +1102,40 @@ def kill_process(pid: int, entry: LineageEntry, rule: Rule):
 
         print(f"[!] KILLED lineage {entry.lineage_id:#x}: PID {pid} + {len(killed_pids)-1} children")
 
-    except ProcessLookupError:
-        pass
     except Exception as e:
         print(f"[-] Kill failed: {e}")
 
+def _lineage_subtree(root_id: int) -> Set[int]:
+    """Every lineage ID that descends from root_id (including root_id)."""
+    ids = {root_id}
+    changed = True
+    while changed:
+        changed = False
+        for e in list(lineage_tree.values()):
+            if e.parent_lineage_id in ids and e.lineage_id not in ids:
+                ids.add(e.lineage_id)
+                changed = True
+    return ids
+
 def block_lineage(lineage_id: int, rule: Rule):
-    """Block entire lineage tree"""
+    """Block a lineage and all of its descendants (kernel map + live processes)."""
     global blocked_lineages
-    blocked_lineages.add(lineage_id)
+    ids = _lineage_subtree(lineage_id)
+    for lid in ids:
+        blocked_lineages.add(lid)
+        try:
+            loader.block(lid)
+        except Exception as e:
+            print(f"[-] Failed to update blocked_lineages map: {e}")
 
-    # Update kernel map via loader
-    try:
-        loader.block(lineage_id)
-    except Exception as e:
-        print(f"[-] Failed to update blocked_lineages map: {e}")
-
-    # Kill all processes in this lineage
     for pid, entry in list(lineage_tree.items()):
-        if entry.lineage_id == lineage_id or entry.parent_lineage_id == lineage_id:
-            try:
-                os.kill(pid, signal.SIGKILL)
-                entry.flags |= LF_KILLED
-                entry.exited = True
-            except ProcessLookupError:
-                pass
+        if entry.lineage_id in ids and not entry.exited:
+            _kill_if_same_process(pid, entry)
 
     with stats_lock:
         stats["blocked_lineages"] += 1
 
-    print(f"[!] BLOCKED lineage {lineage_id:#x} (Rule: {rule.name})")
+    print(f"[!] BLOCKED lineage {lineage_id:#x} (+{len(ids) - 1} descendants) (Rule: {rule.name})")
 
 def quarantine_lineage(lineage_id: int, entry: LineageEntry, rule: Rule):
     """Quarantine lineage - restrict network, file access"""
@@ -1085,6 +1181,43 @@ def check_anomalies():
 
         # TODO: Implement when loader exposes dns_queries and data_volume maps
         # For now, these checks are skipped
+
+
+def sweep_lineage_tree():
+    """Mark vanished processes exited, evict old exited entries, and enforce size caps."""
+    now = time.time()
+    for pid, e in list(lineage_tree.items()):
+        if not e.exited:
+            cur = _start_time(pid)
+            if cur == 0 or (e.start_time and cur != e.start_time):
+                e.exited = True
+        if e.exited and not e.exit_time:
+            e.exit_time = now
+    drop = [pid for pid, e in lineage_tree.items() if e.exited and now - e.exit_time > LINEAGE_EXIT_GRACE]
+    over = len(lineage_tree) - len(drop) - LINEAGE_TREE_MAX
+    if over > 0:   # hard cap: oldest exited first, then oldest overall
+        rest = sorted((pid for pid in lineage_tree if pid not in set(drop)),
+                      key=lambda pid: (not lineage_tree[pid].exited, lineage_tree[pid].exec_timestamp))
+        drop.extend(rest[:over])
+    gone_children = defaultdict(set)
+    for pid in drop:
+        e = lineage_tree.pop(pid, None)
+        if e is not None:
+            gone_children[e.ppid].add(pid)
+    for ppid, pids in gone_children.items():
+        parent = lineage_tree.get(ppid)
+        if parent is not None:
+            parent.children = [c for c in parent.children if c not in pids]
+    over = len(lineage_by_id) - LINEAGE_BY_ID_MAX
+    if over > 0:
+        for lid in list(lineage_by_id):
+            if over <= 0:
+                break
+            if lid in blocked_lineages:
+                continue
+            del lineage_by_id[lid]
+            over -= 1
+
 
 def signal_handler(sig, frame):
     global running
@@ -1133,6 +1266,7 @@ def main():
     threading.Thread(target=periodic_save, daemon=True).start()
     threading.Thread(target=print_stats, daemon=True).start()
     threading.Thread(target=check_anomalies, daemon=True).start()
+    threading.Thread(target=sweep_lineage_tree, daemon=True).start()
 
     # Setup signal handlers
     signal.signal(signal.SIGINT, signal_handler)
@@ -1142,9 +1276,25 @@ def main():
     print("[*] Monitoring: execve, connect, openat with lineage tracking")
     print("[*] LSM hooks: task_kill (anti-tamper), file_open (sensitive files)")
 
-    # Main loop - keep alive, loader runs in background
+    # Main loop with a watchdog: if the loader dies the kernel programs detach and the agent
+    # goes blind, so restart it a few times and then exit non-zero (systemd restarts the unit).
+    restarts = 0
     while running:
         time.sleep(1)
+        if loader and not loader.alive() and running:
+            if restarts >= 3:
+                print("[-] loader keeps dying; exiting so the service manager can restart the agent")
+                sys.exit(1)
+            restarts += 1
+            print(f"[-] loader exited unexpectedly; restarting ({restarts}/3)")
+            time.sleep(2 ** restarts)
+            loader.stop()
+            if loader.start():
+                for lid in list(blocked_lineages):
+                    loader.block(lid)
+                _applied_trusted_paths.clear()      # the new kernel map is empty
+                _seed_self_trusted()
+                _sync_trusted_paths()
 
     signal_handler(signal.SIGTERM, None)
 

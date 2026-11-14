@@ -200,11 +200,12 @@ def csrf_verify(session_token: str, provided: str) -> bool:
     return bool(session_token) and hmac.compare_digest(csrf_for(session_token), provided or "")
 
 
-# ─── Login rate-limit (per-IP) ──
+# ─── Login rate-limit (per-IP and per-username) ──
 # Counters live in-process by default. When a StateBackend is attached (the hub
 # attaches one at boot) they are shared, so a multi-worker deployment throttles
 # an attacker consistently instead of per worker.
 _failures = {}
+_user_failures = {}
 _state_backend = None
 
 
@@ -227,32 +228,64 @@ def _save_fail(ip, fails, until):
         _failures[ip] = (fails, until)
 
 
-def _clear_fail(ip):
+def _clear_fail(ip: str, username: str = None):
     if _state_backend is not None:
-        _state_backend.clear_login_failures(ip)
+        _state_backend.clear_login_failures(ip, username)
     else:
         _failures.pop(ip, None)
+        if username:
+            _user_failures.pop(username, None)
 
 
-def login_attempts(ip: str):
-    """Returns (allowed, retry_after). 5 failures → 60s lockout."""
+def _load_user_fail(username: str):
+    """Load failure count and lockout for a username."""
+    if _state_backend is not None:
+        return _state_backend.get_login_failures(username)
+    return _user_failures.get(username, (0, 0.0))
+
+
+def _save_user_fail(username: str, fails: int, until: float = 0.0):
+    if _state_backend is not None:
+        _state_backend.set_login_failures(username, fails, until)
+    else:
+        _user_failures[username] = (fails, until)
+
+
+def login_attempts(ip: str, username: str = None):
+    """Returns (allowed, retry_after). 5 failures → 60s lockout.
+    Checks both IP and username throttling."""
     now = time.time()
+    
+    # Check IP throttling
     fails, until = _load_fail(ip)
     if until and now < until:
         return False, int(until - now)
     if fails >= 5:
         _save_fail(ip, 0, now + 60)
         return False, 60
+    
+    # Check username throttling (if username provided)
+    if username:
+        u_fails, u_until = _load_user_fail(username)
+        if u_until and now < u_until:
+            return False, int(u_until - now)
+        if u_fails >= 5:
+            _save_user_fail(username, 0, now + 60)
+            return False, 60
+    
     return True, 0
 
 
-def login_fail(ip: str):
+def login_fail(ip: str, username: str = None):
     fails, until = _load_fail(ip)
     _save_fail(ip, fails + 1, until)
+    if username:
+        u_fails, u_until = _load_user_fail(username)
+        _save_user_fail(username, u_fails + 1, u_until)
 
 
-def login_reset(ip: str):
-    _clear_fail(ip)
+def login_reset(ip: str, username: str = None):
+    _clear_fail(ip, username)
 
 
 # ─── Allowlist (tiered) + signed distribution ───

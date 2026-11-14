@@ -102,8 +102,8 @@ class StateBackend(ABC):
         pass
 
     @abstractmethod
-    def clear_login_failures(self, ip: str) -> None:
-        """Clear login failures for IP."""
+    def clear_login_failures(self, ip: str, username: str = None) -> None:
+        """Clear login failures for IP and optionally username."""
         pass
 
     @abstractmethod
@@ -213,9 +213,11 @@ class InMemoryState(StateBackend):
         with self._lock:
             self._login_failures[ip] = (failures, until)
 
-    def clear_login_failures(self, ip: str) -> None:
+    def clear_login_failures(self, ip: str, username: str = None) -> None:
         with self._lock:
             self._login_failures.pop(ip, None)
+            if username and hasattr(self, '_user_failures'):
+                self._user_failures.pop(username, None)
 
     def get_stats(self) -> Dict:
         with self._lock:
@@ -382,8 +384,10 @@ class RedisState(StateBackend):
         key = f"{self.LOGIN_FAIL_PREFIX}{ip}"
         self._redis.setex(key, int(until - time.time()) + 1, f"{failures}:{int(until)}")
 
-    def clear_login_failures(self, ip: str) -> None:
+    def clear_login_failures(self, ip: str, username: str = None) -> None:
         self._redis.delete(f"{self.LOGIN_FAIL_PREFIX}{ip}")
+        if username:
+            self._redis.delete(f"login_fail:user:{username}")
 
     def get_stats(self) -> Dict:
         with self._lock:

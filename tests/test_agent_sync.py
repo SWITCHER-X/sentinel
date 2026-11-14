@@ -104,6 +104,9 @@ class AgentApplies(unittest.TestCase):
         self.c = hub.app.test_client()
         self.killed = []
         A.os.kill = lambda pid, sig: self.killed.append(pid)
+        # Mock _start_time so the agent thinks fake PIDs are alive
+        self._orig_pst = A._start_time
+        A._start_time = lambda pid: 42
         # Create a mock loader
         self.mock_loader = MagicMock()
         self.mock_loader.block = MagicMock()
@@ -119,6 +122,9 @@ class AgentApplies(unittest.TestCase):
         self.h = {"X-CSRF-Token": r.get_json()["csrf"]}
         self.c.post("/api/v1/mode", json={"mode": "enforce"}, headers=self.h)
 
+    def tearDown(self):
+        A._start_time = self._orig_pst
+
     def _directive(self):
         return self.c.get("/api/v1/agent/commands", headers=AGENT).get_json()
 
@@ -126,7 +132,7 @@ class AgentApplies(unittest.TestCase):
         lid = 0x1234ABCD
         A.lineage_tree[777] = A.LineageEntry(
             lineage_id=lid, parent_lineage_id=0, pid=777, ppid=1, uid=0, gid=0, ns_pid=777,
-            comm="x", binary_path="/tmp/x", cmdline="x", exec_timestamp=0.0, flags=0)
+            comm="x", binary_path="/tmp/x", cmdline="x", exec_timestamp=0.0, flags=0, start_time=42)
         self.c.post(f"/api/v1/lineage/{lid:#x}/block", headers=self.h)
         self.assertTrue(A.apply_directive(self._directive()))
         self.assertIn(lid, A.blocked_lineages)
@@ -163,6 +169,23 @@ class AgentApplies(unittest.TestCase):
         d = self._directive(); d["schema"] = 2
         d["signature"] = hub.sa.allowlist_sign({k: v for k, v in d.items() if k != "signature"})
         self.assertFalse(A.apply_directive(d))
+
+
+class MetricsAuth(unittest.TestCase):
+    def setUp(self):
+        self.c = hub.app.test_client()
+
+    def test_metrics_requires_auth(self):
+        self.assertEqual(self.c.get("/metrics").status_code, 401)
+
+    def test_metrics_accepts_agent_key_and_bearer(self):
+        self.assertEqual(self.c.get("/metrics", headers=AGENT).status_code, 200)
+        key = AGENT["X-Sentinel-Key"]
+        self.assertEqual(self.c.get("/metrics", headers={"Authorization": "Bearer " + key}).status_code, 200)
+        self.assertEqual(self.c.get("/metrics", headers={"Authorization": "Bearer wrong"}).status_code, 401)
+
+    def test_health_stays_public(self):
+        self.assertEqual(self.c.get("/health").status_code, 200)
 
 
 if __name__ == "__main__":
