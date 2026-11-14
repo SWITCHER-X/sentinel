@@ -61,10 +61,10 @@
   --shadow-1: 0 1px 0 rgba(255,255,255,0.03) inset, 0 12px 32px rgba(0,0,0,0.30);
   --shadow-2: 0 28px 72px rgba(0,0,0,0.55);
   --transition: 150ms cubic-bezier(0.4, 0, 0.2, 1);
-  --header-h: 50px;
-  --kpi-h: 78px;
-  --command-bar-h: 38px;
-  --gap: 12px;
+  --header-h: 48px;
+  --kpi-h: 64px;
+  --command-bar-h: 36px;
+  --gap: 0px;
   --sidebar-w: 306px;
   --graph-w: 408px;
 }
@@ -237,11 +237,10 @@ button.badge:hover { filter: brightness(1.18); }
 }
 .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
 .brand-mark {
-  display: grid; place-items: center; width: 30px; height: 30px; flex-shrink: 0;
-  border-radius: 9px; color: var(--accent);
-  background: linear-gradient(155deg, var(--accent-soft), transparent 72%);
-  border: 1px solid rgba(45,212,191,0.35);
-  box-shadow: 0 0 20px rgba(45,212,191,0.10);
+  display: grid; place-items: center; width: 28px; height: 28px; flex-shrink: 0;
+  border-radius: 8px; color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid rgba(45,212,191,0.25);
 }
 .brand-text { display: flex; flex-direction: column; line-height: 1.15; }
 .brand-name {
@@ -275,8 +274,8 @@ button.badge:hover { filter: brightness(1.18); }
   overflow-x: auto;
 }
 .kpi {
-  display: flex; flex-direction: column; justify-content: center; gap: 2px;
-  flex: 1 1 0; min-width: 132px; padding: 10px 16px 8px;
+  display: flex; flex-direction: column; justify-content: center; gap: 1px;
+  flex: 1 1 0; min-width: 132px; padding: 7px 16px 6px;
 }
 .kpi + .kpi { border-left: 1px solid var(--border); }
 .kpi-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
@@ -284,20 +283,17 @@ button.badge:hover { filter: brightness(1.18); }
   font-family: var(--font-mono); font-size: var(--fs-micro); font-weight: 600;
   letter-spacing: 0.14em; text-transform: uppercase; color: var(--fg-dim);
 }
-.kpi canvas { width: 100%; height: 30px; display: block; margin-top: 2px; }
+.kpi canvas { width: 100%; height: 24px; display: block; }
 
 /* ─── Workspace ─────────────────────────────────────────────────────────── */
 .workspace {
-  display: flex; gap: var(--gap);
+  display: flex;
   height: calc(100vh - var(--header-h) - var(--kpi-h) - var(--command-bar-h));
-  min-height: 0; padding: var(--gap); 
+  min-height: 0;
 }
 .pane {
   display: flex; flex-direction: column; min-height: 0;
   background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-1);
   overflow: hidden;
 }
 .pane-head {
@@ -313,6 +309,7 @@ button.badge:hover { filter: brightness(1.18); }
 /* Sidebar */
 .sidebar {
   width: var(--sidebar-w); flex-shrink: 0;
+  border-right: 1px solid var(--border);
   transition: width var(--transition), opacity var(--transition), border-color var(--transition);
 }
 .search-wrap { position: relative; }
@@ -344,7 +341,7 @@ button.badge:hover { filter: brightness(1.18); }
 .host-tree { font-size: var(--fs-sm); color: var(--fg-muted); }
 
 /* Feed */
-.feed { flex: 1 1 auto; min-width: 0; }
+.feed { flex: 1 1 auto; min-width: 0; background: var(--bg); }
 .timeline { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; position: relative; }
 .timeline-empty {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -360,7 +357,7 @@ button.badge:hover { filter: brightness(1.18); }
 }
 
 /* Graph */
-.graph-panel { width: var(--graph-w); flex-shrink: 0; }
+.graph-panel { width: var(--graph-w); flex-shrink: 0; border-left: 1px solid var(--border); }
 .legend { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 14px; border-bottom: 1px solid var(--border); }
 .legend span {
   display: inline-flex; align-items: center; gap: 5px;
@@ -587,10 +584,6 @@ button.badge:hover { filter: brightness(1.18); }
       <span>OFFLINE</span>
     </span>
     <button id="mode-badge" class="badge badge-ok mono cursor-pointer" title="Kill-switch state. Click to toggle learn/enforce.">ENFORCING</button>
-    <button id="act-update" class="badge badge-dim mono cursor-pointer" title="Install the latest version from git (staged: new version is verified before cutover)">UPDATE</button>
-    <button id="density-toggle" class="icon-btn" aria-label="Toggle row density (Ctrl+Shift+D)" title="Row density (Ctrl+Shift+D)">
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
-    </button>
     <button id="theme-toggle" data-theme-toggle class="icon-btn" aria-label="Toggle theme" title="Toggle theme (Ctrl+T)">
       <svg id="icon-sun" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="hidden"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
       <svg id="icon-moon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
@@ -614,14 +607,6 @@ button.badge:hover { filter: brightness(1.18); }
   <div class="kpi">
     <div class="kpi-head"><span class="kpi-label">CPU %</span></div>
     <canvas data-sparkline="cpu"></canvas>
-  </div>
-  <div class="kpi">
-    <div class="kpi-head"><span class="kpi-label">Mem %</span></div>
-    <canvas data-sparkline="mem"></canvas>
-  </div>
-  <div class="kpi">
-    <div class="kpi-head"><span class="kpi-label">Net I/O</span></div>
-    <canvas data-sparkline="net"></canvas>
   </div>
 </div>
 
@@ -652,16 +637,10 @@ button.badge:hover { filter: brightness(1.18); }
   </aside>
 
   <main data-main class="feed pane">
-    <div class="pane-head">
-      <span class="eyebrow">Event feed</span>
-      <span class="kbd-hints" aria-hidden="true"><span><kbd>J</kbd><kbd>K</kbd> navigate</span><span><kbd>Enter</kbd> open</span><span><kbd>Ctrl</kbd><kbd>K</kbd> palette</span></span>
-    </div>
     <div class="timeline" id="timeline-container" data-timeline-container role="list" aria-label="Event timeline" tabindex="0">
       <div id="timeline-rows" data-timeline-rows style="position: relative;"></div>
       <div id="timeline-empty" data-timeline-empty class="hidden timeline-empty">
-        <svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V19a2 2 0 01-2 2H10a2 2 0 01-2-2v-2"/></svg>
-        <div class="empty-title">No events yet</div>
-        <p class="empty-sub">The feed fills as soon as an agent ships telemetry. Start the sensor on a monitored host, or replay demo traffic to explore the console.</p>
+        <div class="empty-title">Waiting for telemetry</div>
         <code class="empty-cmd">sudo systemctl start sentinel-agent</code>
         <p class="empty-sub mono" id="empty-message" style="font-size: var(--fs-xs);">No events matching filter: ALL</p>
       </div>
@@ -687,7 +666,6 @@ button.badge:hover { filter: brightness(1.18); }
     <div class="graph-stage" id="graph-container" data-graph-container>
       <canvas id="graph-canvas" data-graph-canvas></canvas>
       <div id="graph-empty" data-graph-empty class="graph-empty">
-        <svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
         <div class="empty-title">No lineage data</div>
         <p class="empty-sub">Trees appear once the agent reports process executions.</p>
       </div>
@@ -699,22 +677,12 @@ button.badge:hover { filter: brightness(1.18); }
 <footer data-command-bar class="command-bar">
   <div class="command-left flex-1 min-w-0">
     <button id="palette-trigger" data-palette-trigger class="palette-trigger" aria-label="Command Palette (Ctrl+K)">
-      <kbd>Ctrl</kbd><kbd>K</kbd><span>Command palette</span>
+      <kbd>Ctrl</kbd><kbd>K</kbd><span>Search &amp; actions</span>
     </button>
     <span id="status-text" data-status-text class="status-line mono">OFFLINE · 0 hosts · 0 events/min · 0 lineages</span>
   </div>
-  <div class="kbd-hints" aria-hidden="true">
-    <span><kbd>Ctrl</kbd><kbd>B</kbd> sidebar</span>
-    <span><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>D</kbd> density</span>
-    <span><kbd>Ctrl</kbd><kbd>T</kbd> theme</span>
-  </div>
-  <div class="command-right">
-    <button id="act-export" data-act-export class="btn" title="Export JSON (E)">Export</button>
-    <button id="act-clear" data-act-clear class="btn" title="Clear feedback">Clear</button>
-    <button id="act-block-all" data-act-block-all class="btn btn-danger" title="Block all threats">Block all</button>
-    <button id="act-refresh" data-act-refresh class="btn" title="Refresh (R)">Refresh</button>
-  </div>
 </footer>
+
 
 <div id="command-palette" data-command-palette class="palette-backdrop hidden" role="dialog" aria-modal="true" aria-label="Command Palette">
   <div class="palette-scrim" aria-hidden="true"></div>
@@ -728,10 +696,7 @@ button.badge:hover { filter: brightness(1.18); }
       </div>
     </div>
     <div class="palette-results" id="palette-results" data-palette-results role="listbox" aria-label="Commands"></div>
-    <div class="palette-foot">
-      <span><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>Enter</kbd> run</span>
-      <span><kbd>Esc</kbd> close</span>
-    </div>
+    <div class="palette-foot"><span><kbd>Esc</kbd> close</span></div>
   </div>
 </div>
 

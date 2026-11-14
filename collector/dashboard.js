@@ -5,7 +5,7 @@ class SentinelDashboard {
   constructor() {
     this.state = {
       theme: 'dark',
-      density: 'compact',
+      density: 'comfortable',
       sidebarCollapsed: false,
       currentFilter: 'ALL',
       activeFilters: new Set(['ALL']),
@@ -169,7 +169,7 @@ class SentinelDashboard {
     try { saved = localStorage.getItem('sentinel-theme'); } catch (e) {}
     this.state.theme = saved || 'dark';
     try {
-      this.state.density = localStorage.getItem('sentinel-density') || 'compact';
+      this.state.density = localStorage.getItem('sentinel-density') || 'comfortable';
       this.state.sidebarCollapsed = localStorage.getItem('sentinel-sidebar') === '1';
     } catch (e) {}
     this.applyTheme();
@@ -1287,7 +1287,8 @@ class SentinelDashboard {
       { group: 'Actions', label: 'Toggle theme', keywords: 'theme dark light', action: () => this.toggleTheme() },
       { group: 'Actions', label: 'Toggle density', keywords: 'density compact comfortable', action: () => this.toggleDensity() },
       { group: 'Actions', label: 'Refresh all data', keywords: 'refresh reload', action: () => this.refreshAll() },
-      { group: 'Actions', label: 'Clear feed', keywords: 'clear feed', action: () => this.clearFeed() }
+      { group: 'Actions', label: 'Clear feed', keywords: 'clear feed', action: () => this.clearFeed() },
+      { group: 'Actions', label: 'Install updates from git', keywords: 'update upgrade git deploy', action: () => this.startUpdate() }
     );
     return items;
   }
