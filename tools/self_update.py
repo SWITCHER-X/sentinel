@@ -43,7 +43,7 @@ REPO = os.getenv("SENTINEL_UPDATE_REPO", "https://github.com/SWITCHER-X/sentinel
 REF = os.getenv("SENTINEL_UPDATE_REF", "master")
 PORT = int(os.getenv("SENTINEL_PORT", "5000"))
 SPARE_PORT = int(os.getenv("SENTINEL_UPDATE_PORT", str(PORT + 1)))
-VERIFY = os.getenv("SENTINEL_UPDATE_VERIFY", "0") == "1"
+VERIFY = os.getenv("SENTINEL_UPDATE_VERIFY", "1") == "1"  # fail closed
 SERVICE = os.getenv("SENTINEL_HUB_SERVICE", "sentinel-hub")
 SERVICE_USER = os.getenv("SENTINEL_SERVICE_USER", "sentinel")
 
@@ -280,6 +280,10 @@ def main(argv=None) -> int:
     REF, REPO = args.ref, args.repo
 
     load_env_file()
+    # The env file is loaded after import: recompute the verification switch so a
+    # manual run and the systemd unit behave identically.
+    global VERIFY
+    VERIFY = os.getenv("SENTINEL_UPDATE_VERIFY", "1") == "1"
     VARLIB.mkdir(parents=True, exist_ok=True)
     lock = open(LOCK_FILE, "w")
     try:
@@ -307,6 +311,7 @@ def main(argv=None) -> int:
             print(f"update available: {target}")
             return 0
 
+        verify_signature(target)  # fail closed before anything is built
         report(installed, target, "building", "building eBPF objects")
         build()
         report(installed, target, "staging", "staging files and dependencies")
