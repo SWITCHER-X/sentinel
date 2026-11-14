@@ -91,6 +91,33 @@ class HubDirective(unittest.TestCase):
         self.assertIn("0x000000000000AAAA", ids)
         self.assertNotIn("0x000000000000BBBB", ids)
 
+    def test_login_cookie_is_hardened_and_errors_are_generic(self):
+        c = hub.app.test_client()
+        bad = c.post("/api/v1/login", json={"username": "admin", "password": "wrong-password"})
+        self.assertEqual(bad.status_code, 401)
+        self.assertEqual(bad.get_json()["error"], "invalid credentials")
+
+        ok = c.post("/api/v1/login", json={"username": "admin", "password": "test-admin-pw"})
+        self.assertEqual(ok.status_code, 200)
+        cookie = ok.headers.get("Set-Cookie", "")
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=Strict", cookie)
+        self.assertIn("Max-Age=", cookie)
+
+        out = c.post("/api/v1/logout")
+        self.assertEqual(out.status_code, 200)
+        self.assertIn("sentinel_session=;", out.headers.get("Set-Cookie", ""))
+
+    def test_logout_revokes_the_token_server_side(self):
+        c = hub.app.test_client()
+        r = c.post("/api/v1/login", json={"username": "admin", "password": "test-admin-pw"})
+        token = r.headers["Set-Cookie"].split("sentinel_session=")[1].split(";")[0]
+        self.assertEqual(c.post("/api/v1/logout").status_code, 200)
+
+        replay = hub.app.test_client().get(
+            "/api/v1/csrf", headers={"Cookie": f"sentinel_session={token}"})
+        self.assertEqual(replay.status_code, 401)
+
     def test_mode_change_is_reflected(self):
         h = self._admin()
         self.c.post("/api/v1/mode", json={"mode": "learn"}, headers=h)

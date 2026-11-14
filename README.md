@@ -363,6 +363,7 @@ Project SENTINEL is **alpha** software (v1.0.0), developed and tested on Arch Li
 - **Empty cmdline fallback** — first exec after fork backfills from `/proc/<pid>/exe` and `/proc/<pid>/cmdline`
 - **Kernel alerts** — blocked lineage, BPF/module load alerts forwarded to hub as `KERNEL_ALERT`
 - **Network byte order** — `dport` converted via `ntohs`, `daddr` to dotted IP string
+- **Auth hardening** — versioned scrypt hashes (`scrypt$n$r$p$salt$hash`) that upgrade on next login, constant-work user lookup, sliding 45-minute idle sessions with a 12-hour absolute cap, `SameSite=Strict` + `HttpOnly` cookies, server-side logout revocation, exponential login lockout
 - **Agent/hub state split** — agent uses `SENTINEL_AGENT_DB`, hub uses `SENTINEL_DB`
 - **Throughput** — `hash_binary` cached with `@lru_cache`, telemetry sent from async worker queue (10k max, drop counter logged)
 

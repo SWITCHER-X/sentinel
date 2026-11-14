@@ -41,6 +41,18 @@ sa.set_state_backend(STATE)  # share login throttling across workers when Redis 
 # SENTINEL_REQUIRE_TLS enforces Secure cookies + proxy header checks.
 SESSION_COOKIE_SECURE = os.getenv("SENTINEL_SESSION_COOKIE_SECURE", "0") == "1"
 
+SESSION_COOKIE = "sentinel_session"
+
+
+def _set_session_cookie(resp, token: str):
+    """One place that decides cookie flags: HttpOnly, SameSite=Strict, TLS-aware."""
+    resp.set_cookie(
+        SESSION_COOKIE, token, httponly=True, samesite="Strict",
+        secure=SESSION_COOKIE_SECURE, max_age=sa.SESSION_TTL, path="/",
+    )
+    return resp
+
+
 # ─── Fail closed: require all secrets at boot ───
 REQUIRED_SECRETS = [
     "SENTINEL_AGENT_KEY",
@@ -425,31 +437,56 @@ def login_page():
 @app.route("/api/v1/login", methods=["POST"])
 def api_login():
     ip = request.remote_addr or "?"
-    body = request.json or {}
-    username = body.get("username", "")
-    
-    # Check both IP and username throttling
+    body = request.get_json(silent=True) or {}
+    username = (body.get("username") or "").strip()
+    password = body.get("password") or ""
+
     allowed, retry = sa.login_attempts(ip, username)
     if not allowed:
-        return jsonify({"error": f"locked, retry in {retry}s"}), 429
-    
-    if sa.check_user(username, body.get("password", "")):
+        resp = jsonify({"error": "too many attempts", "retry_after": retry})
+        resp.headers["Retry-After"] = str(retry)
+        return resp, 429
+
+    if sa.check_user(username, password):
         sa.login_reset(ip, username)
-        tok = sa.session_create()
+        token = sa.session_create(subject=username)
         sa.audit(username, "login", f"ip={ip}")
-        resp = make_response(jsonify({"ok": True, "csrf": sa.csrf_for(tok)}))
-        resp.set_cookie("sentinel_session", tok, httponly=True, samesite="Lax",
-                        secure=SESSION_COOKIE_SECURE, max_age=12 * 3600)
+        resp = make_response(jsonify({"ok": True, "csrf": sa.csrf_for(token)}))
+        _set_session_cookie(resp, token)
+        resp.headers["Cache-Control"] = "no-store"
         return resp
-    
+
     sa.login_fail(ip, username)
+    sa.audit(username or "-", "login.failed", f"ip={ip}")
     return jsonify({"error": "invalid credentials"}), 401
 
 
 @app.route("/api/v1/logout", methods=["POST"])
 def api_logout():
+    token = request.cookies.get(SESSION_COOKIE, "")
+    claims = sa.session_claims(token)
+    if claims:
+        sa.revoke_session(token)  # server-side: a copied cookie stops working
+        sa.audit(claims.get("sub", "admin"), "logout", "")
     resp = make_response(jsonify({"ok": True}))
-    resp.delete_cookie("sentinel_session")
+    resp.delete_cookie(SESSION_COOKIE, path="/")
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.after_request
+def _session_and_security_headers(resp):
+    """Sliding expiry + baseline headers. Never touches the login/logout replies."""
+    if request.path.startswith("/api/"):
+        resp.headers.setdefault("Cache-Control", "no-store")
+        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    if request.path in ("/api/v1/login", "/api/v1/logout"):
+        return resp
+    token = request.cookies.get(SESSION_COOKIE, "")
+    if token:
+        claims = sa.session_claims(token)
+        if claims and time.time() - claims["iat"] >= sa.SESSION_REFRESH_AFTER:
+            _set_session_cookie(resp, sa.session_create(claims.get("sub") or "admin"))
     return resp
 
 
