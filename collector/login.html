@@ -3,70 +3,160 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark light">
 <title>SENTINEL — Sign in</title>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<script>
+  (function() {
+    try {
+      var theme = localStorage.getItem('sentinel-theme');
+      if (!theme) theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.setAttribute('data-theme', theme);
+    } catch (e) {}
+  })();
+</script>
 <style>
 :root {
-  --bg: #0b0f14; --bg-elevated: #111820; --bg-sunken: #080c10;
-  --fg: #e8ecf1; --fg-muted: #6b7a8a; --fg-dim: #3d4a5a;
-  --accent: #00d4aa; --crit: #ff3b30;
-  --border: #1e2a36; --border-strong: #2d3e4e;
+  --bg: #070b10;
+  --bg-elevated: #0c1219;
+  --bg-sunken: #04070a;
+  --fg: #e7edf3;
+  --fg-muted: #94a3b5;
+  --fg-dim: #5b6b7c;
+  --accent: #2dd4bf;
+  --accent-soft: rgba(45, 212, 191, 0.12);
+  --crit: #ff6b6b;
+  --border: #182330;
+  --border-strong: #2a3a4a;
+  --radius: 8px;
   --font-ui: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-display: 'Space Grotesk', 'IBM Plex Sans', sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
-  --radius: 4px;
+  --transition: 140ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+[data-theme="light"] {
+  --bg: #f4f7fa;
+  --bg-elevated: #ffffff;
+  --bg-sunken: #e9eef4;
+  --fg: #0f1a24;
+  --fg-muted: #4a5a6b;
+  --fg-dim: #8a99a8;
+  --accent: #0f766e;
+  --accent-soft: rgba(15, 118, 110, 0.10);
+  --crit: #b91c1c;
+  --border: #d6dee7;
+  --border-strong: #b3c0cd;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
-  font-family: var(--font-ui); font-size: 12px;
-  background: var(--bg); color: var(--fg);
-  min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  background:
+    radial-gradient(900px 480px at 50% -10%, var(--accent-soft), transparent 65%),
+    var(--bg);
+  color: var(--fg);
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  -webkit-font-smoothing: antialiased;
 }
+::selection { background: var(--accent-soft); }
 .card {
-  width: 340px; padding: 28px;
-  background: var(--bg-elevated); border: 1px solid var(--border);
+  width: 100%; max-width: 384px; padding: 30px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45), 0 1px 0 rgba(255, 255, 255, 0.03) inset;
 }
-.logo { font-family: var(--font-mono); font-weight: 700; letter-spacing: 0.2em;
-  color: var(--accent); font-size: 15px; margin-bottom: 4px; }
-.sub { color: var(--fg-muted); font-size: 11px; margin-bottom: 22px; }
-label { display: block; font-size: 10px; text-transform: uppercase;
-  letter-spacing: 0.5px; color: var(--fg-muted); margin: 12px 0 4px; }
+.brand { display: flex; align-items: center; gap: 11px; margin-bottom: 6px; }
+.brand-mark {
+  display: grid; place-items: center; width: 34px; height: 34px;
+  border-radius: 10px; color: var(--accent);
+  background: linear-gradient(155deg, var(--accent-soft), transparent 70%);
+  border: 1px solid rgba(45, 212, 191, 0.35);
+  box-shadow: 0 0 20px rgba(45, 212, 191, 0.12);
+}
+.brand-name {
+  font-family: var(--font-display); font-weight: 700; font-size: 17px;
+  letter-spacing: 0.13em; line-height: 1.1;
+}
+.brand-sub {
+  font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.16em;
+  text-transform: uppercase; color: var(--fg-dim);
+}
+.sub { color: var(--fg-muted); font-size: 12px; margin: 4px 0 24px; }
+label {
+  display: block; font-family: var(--font-mono); font-size: 9px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.12em; color: var(--fg-dim);
+  margin: 14px 0 6px;
+}
 input {
-  width: 100%; height: 34px; padding: 0 10px;
+  width: 100%; height: 38px; padding: 0 11px;
   background: var(--bg-sunken); border: 1px solid var(--border);
-  color: var(--fg); border-radius: var(--radius); font-family: var(--font-mono);
-  font-size: 12px;
+  color: var(--fg); border-radius: 6px; font-family: var(--font-mono); font-size: 12px;
+  transition: border-color var(--transition), box-shadow var(--transition);
 }
-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(0,212,170,0.25); }
+input:hover { border-color: var(--border-strong); }
+input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 button {
-  width: 100%; height: 36px; margin-top: 18px;
-  background: var(--accent); color: #04211b; border: none; border-radius: var(--radius);
+  width: 100%; height: 40px; margin-top: 22px;
+  background: var(--accent); color: #04140f; border: none; border-radius: 6px;
   font-family: var(--font-mono); font-weight: 700; font-size: 11px;
-  letter-spacing: 0.1em; text-transform: uppercase; cursor: pointer;
+  letter-spacing: 0.12em; text-transform: uppercase; cursor: pointer;
+  transition: filter var(--transition), transform var(--transition);
 }
-button:hover { filter: brightness(1.1); }
-.err { color: var(--crit); font-size: 11px; margin-top: 12px; min-height: 14px; font-family: var(--font-mono); }
-.hint { margin-top: 16px; color: var(--fg-dim); font-size: 10px; line-height: 1.5; }
+button:hover { filter: brightness(1.08); }
+button:active { transform: translateY(1px); }
+button:disabled { opacity: 0.6; cursor: progress; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.err {
+  min-height: 16px; margin-top: 12px; color: var(--crit);
+  font-family: var(--font-mono); font-size: 11px;
+}
+.hint {
+  margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border);
+  color: var(--fg-dim); font-size: 10px; line-height: 1.6;
+}
+.hint code { font-family: var(--font-mono); color: var(--fg-muted); }
 </style>
 </head>
 <body>
 <div class="card">
-  <div class="logo">SENTINEL LINEAGE</div>
-  <div class="sub">Endpoint detection — authentication required</div>
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z"/><path d="M9 12l2 2 4-4"/>
+      </svg>
+    </span>
+    <span>
+      <span class="brand-name">SENTINEL</span><br>
+      <span class="brand-sub">Lineage EDR</span>
+    </span>
+  </div>
+  <p class="sub">Authentication required to open the console.</p>
   <form id="f">
     <label for="u">Username</label>
-    <input id="u" autocomplete="username" autofocus>
+    <input id="u" name="username" autocomplete="username" autofocus spellcheck="false">
     <label for="p">Password</label>
-    <input id="p" type="password" autocomplete="current-password">
-    <button type="submit">Sign in</button>
-    <div class="err" id="e"></div>
+    <input id="p" name="password" type="password" autocomplete="current-password">
+    <button type="submit" id="submit">Sign in</button>
+    <div class="err" id="e" role="alert" aria-live="polite"></div>
   </form>
-  <div class="hint">Credentials are set at install time in<br>/etc/sentinel/sentinel.env</div>
+  <div class="hint">Credentials are set at install time in<br><code>/etc/sentinel/sentinel.env</code></div>
 </div>
 <script>
 document.getElementById('f').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   const e = document.getElementById('e');
+  const btn = document.getElementById('submit');
+  e.textContent = '';
+  btn.disabled = true;
   try {
     const r = await fetch('/api/v1/login', {
       method: 'POST',
@@ -78,9 +168,11 @@ document.getElementById('f').addEventListener('submit', async (ev) => {
     });
     if (r.ok) { location.href = '/'; return; }
     const j = await r.json().catch(() => ({}));
-    e.textContent = j.error || ('failed: ' + r.status);
+    e.textContent = j.error || ('sign-in failed: ' + r.status);
   } catch (err) {
     e.textContent = 'connection error';
+  } finally {
+    btn.disabled = false;
   }
 });
 </script>
