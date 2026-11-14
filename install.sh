@@ -232,6 +232,9 @@ fi
 install -d -m 755 "$OPT"
 install -d -m 750 -o sentinel -g sentinel "$VARLIB"
 install -d -m 750 "$ETC"
+# Older installs (or a root-run credential sync) can leave state owned by root;
+# the hub runs as 'sentinel' and SQLite needs write access to the file AND dir.
+chown -R sentinel:sentinel "$VARLIB" 2>/dev/null || true
 step_ok "directories ready"
 
 # ─── [3/8] Application files ───
@@ -405,6 +408,12 @@ import sentinel_auth as sa
 sa.ensure_user("$ADMIN_USER_SYNCED", """$ADMIN_PW_SYNCED""", reset=True)
 PYEOF
 
+# This heredoc ran as root: give the DB (and any -wal/-shm) back to the service user.
+chown -R sentinel:sentinel "$VARLIB"
+if [[ $SYSTEMD -eq 1 ]]; then
+  systemctl restart sentinel-hub
+fi
+
 CHECKS_PASS=0; CHECKS_FAIL=0; CHECKS_WARN=0
 pass_chk() { printf '       PASS  %s\n' "$1"; CHECKS_PASS=$((CHECKS_PASS + 1)); }
 fail_chk() { printf '       FAIL  %s\n' "$1"; CHECKS_FAIL=$((CHECKS_FAIL + 1)); }
@@ -420,6 +429,8 @@ py_import()       { "$OPT/.venv/bin/python" -c "import $1"; }
 health_ok()       { curl -sf --max-time 3 -H "X-Sentinel-Key: ${AGENT_KEY_SYNCED:-}" "http://127.0.0.1:$PORT/health" 2>/dev/null | grep -qE '"status":"(ok|healthy)"'; }
 page_ok()         { curl -sf --max-time 3 -o /dev/null "http://127.0.0.1:$PORT/login"; }
 agent_active()    { systemctl is-active --quiet sentinel-agent 2>/dev/null; }
+state_owned()     { [[ "$(stat -c %U "$VARLIB" 2>/dev/null)" == "sentinel" ]] && \
+                    { [[ ! -e "$VARLIB/sentinel.db" ]] || [[ "$(stat -c %U "$VARLIB/sentinel.db")" == "sentinel" ]]; }; }
 rules_ok()        { "$OPT/.venv/bin/python" "$OPT/tools/validate_rules.py" "$ETC/rules.yaml" 2>&1 | grep -q "All rules passed"; }
 login_ok() {
   PORT="$PORT" CHECK_PW="$ADMIN_PW_SYNCED" CHECK_USER="$ADMIN_USER_SYNCED" "$OPT/.venv/bin/python" - <<'PYLOGIN'
@@ -446,6 +457,7 @@ fi
 printf '       -- verification --\n'
 run_chk  "secrets have no CHANGE_ME placeholders" no_placeholders "$GEN_CAT"
 run_chk  "secret file permissions are 600" env_perms "$GEN_CAT"
+run_chk  "state dir and auth DB owned by sentinel" state_owned
 run_chk  "Python env imports flask" py_import flask
 run_chk  "Python env imports yaml" py_import yaml
 run_chk  "Python env imports gunicorn" py_import gunicorn
