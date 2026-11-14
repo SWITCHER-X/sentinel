@@ -296,7 +296,16 @@ add_secret() {  # key value — set when missing OR still a CHANGE_ME placeholde
 
 ADMIN_PW=""
 if [[ $EXISTING_INSTALL -eq 1 && $RESET_CREDS -eq 0 ]]; then
-  note "existing installation detected — credentials preserved"
+  CUR_PW=$(grep -m1 '^SENTINEL_ADMIN_PASSWORD=' "$GEN_CAT" 2>/dev/null | cut -d= -f2- || true)
+  if [[ -z "$CUR_PW" || "$CUR_PW" == CHANGE_ME* ]]; then
+    # Older installs copied the placeholder and never replaced it.
+    ADMIN_PW=$(openssl rand -base64 18 2>/dev/null || head -c 24 /dev/urandom | base64)
+    set_secret "SENTINEL_ADMIN_PASSWORD" "$ADMIN_PW"
+    note "placeholder dashboard password replaced — printed below"
+  else
+    note "existing installation detected — credentials preserved"
+  fi
+  add_secret "SENTINEL_ADMIN_USER" "admin"
 else
   ADMIN_PW=$(openssl rand -base64 18 2>/dev/null || head -c 24 /dev/urandom | base64)
   add_secret "SENTINEL_ADMIN_USER" "admin"
