@@ -63,10 +63,10 @@ lineage_id = hash(parent_lineage_id, binary_path, uid, timestamp_ns)
 - Tracepoints: `sys_enter_execve`, `sys_enter_execveat`, `sys_exit_execve`, `sys_enter_connect`, `sys_enter_openat`, `sys_enter_sendmsg`, `sched_process_exit`
 - LSM hooks: `bprm_check_security`, `task_kill`, `file_open`, `bpf`, `kernel_module_request`, `kernel_read_file`
 - Maps: lineage LRU maps (65,536 entries), `blocked_lineages`, `trusted_binaries`, per-PID DNS and data-volume counters, and five ring buffers (exec, connect, file, alert, ICMP)
-- CO-RE source (`vmlinux.h` + libbpf helpers) plus a legacy BCC source
+- CO-RE source (`vmlinux.h` + libbpf helpers); the legacy BCC source is kept for reference only and is not loaded
 
 **Agent**
-- 74 detection rules with MITRE ATT&CK tags (see [Detection rules](#detection-rules))
+- 73 detection rules with MITRE ATT&CK tags (see [Detection rules](#detection-rules))
 - Actions: log, alert, kill process and children, block lineage, quarantine
 - Learn mode that downgrades every enforcing action to a log entry
 - HMAC-verified allowlist sync from the hub
@@ -91,7 +91,7 @@ lineage_id = hash(parent_lineage_id, binary_path, uid, timestamp_ns)
 │   ring buffers: exec · conn · file · alert · icmp                    │        │  SOC dashboard (:5000)      │
 │            │                                      ▲                  │ events │  Telegram · /metrics        │
 │            ▼                                      │ map updates      │ ─────▶ │                             │
-│  Agent (Python + BCC): tree builder · rule engine · kill / block     │ ◀───── │  mode (learn/enforce)       │
+│  Agent (Python + libbpf): tree builder · rule engine · kill / block  │ ◀───── │  mode (learn/enforce)       │
 │                                                                      │  poll  │  signed allowlist           │
 └──────────────────────────────────────────────────────────────────────┘        └─────────────────────────────┘
 ```
@@ -115,10 +115,24 @@ More detail: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 | Component | Needs |
 |---|---|
 | Hub | Python 3.10+, Flask, 256 MB RAM. Runs on any OS Python supports. |
-| Agent | x86_64 Linux, kernel 5.8+ (BPF ring buffer) with BTF (`CONFIG_DEBUG_INFO_BTF=y`), root, BCC bindings (distro package), clang/llvm, kernel headers |
+| Agent | Linux (x86_64 or aarch64), kernel 5.8+ (BPF ring buffer) with BTF (`CONFIG_DEBUG_INFO_BTF=y`), root, the `sentinel-loader` binary (libbpf); building it needs clang/llvm, libbpf headers and gcc |
 | LSM hooks | `CONFIG_BPF_LSM=y` and `bpf` in the kernel's boot-time `lsm=` list |
 
-The bundled `vmlinux.h` and the Makefile target x86_64.
+The Makefile auto-detects the BPF target architecture (`__TARGET_ARCH_x86` on
+x86_64, `__TARGET_ARCH_arm64` on aarch64); override with `make BPF_TARGET_ARCH=…`.
+The bundled `vmlinux.h` was generated on x86_64.
+
+---
+
+## Testing
+
+```bash
+pip install -r requirements-dev.txt   # pytest
+python3 -m pytest tests -q            # unit + regression tests
+python3 tools/validate_rules.py config/rules.yaml
+make build-core                       # compile the CO-RE object
+make kernel-test                      # real-kernel selftest (root, BTF, tracefs)
+```
 
 ---
 
@@ -206,7 +220,7 @@ Rules live in `config/rules.yaml`, are tagged with MITRE ATT&CK techniques, and 
 | 32 | `NETWORK` | Network-event rule |
 | 64 | `FILE_WRITE` | File-integrity rule |
 
-**Coverage** (74 rules)
+**Coverage** (73 rules)
 
 | IDs | Category |
 |---|---|
