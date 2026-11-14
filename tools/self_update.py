@@ -43,6 +43,7 @@ REPO = os.getenv("SENTINEL_UPDATE_REPO", "https://github.com/SWITCHER-X/sentinel
 REF = os.getenv("SENTINEL_UPDATE_REF", "master")
 PORT = int(os.getenv("SENTINEL_PORT", "5000"))
 SPARE_PORT = int(os.getenv("SENTINEL_UPDATE_PORT", str(PORT + 1)))
+VERIFY = os.getenv("SENTINEL_UPDATE_VERIFY", "0") == "1"
 SERVICE = os.getenv("SENTINEL_HUB_SERVICE", "sentinel-hub")
 SERVICE_USER = os.getenv("SENTINEL_SERVICE_USER", "sentinel")
 
@@ -148,6 +149,20 @@ def fetch() -> str:
         shutil.rmtree(SRC_DIR, ignore_errors=True)
         run(["git", "clone", "--depth=1", "--branch", REF, REPO, str(SRC_DIR)])
     return run(["git", "-C", str(SRC_DIR), "rev-parse", "HEAD"]).stdout.strip()
+
+
+def verify_signature(commit: str) -> None:
+    """Fail closed: never build an unverified ref when verification is requested."""
+    if not VERIFY:
+        return
+    tag = run(["git", "-C", str(SRC_DIR), "describe", "--tags", "--exact-match", commit],
+              check=False)
+    if tag.returncode == 0:
+        run(["git", "-C", str(SRC_DIR), "verify-tag", tag.stdout.strip()])
+        log("signature: tag %s verified" % tag.stdout.strip())
+    else:
+        run(["git", "-C", str(SRC_DIR), "verify-commit", commit])
+        log("signature: commit verified")
 
 
 def build() -> None:

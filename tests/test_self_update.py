@@ -85,3 +85,70 @@ def test_load_env_file_sets_missing_keys(tmp_path, monkeypatch):
     import os
 
     assert os.environ["SENTINEL_TEST_KEY"] == "from-file"
+
+
+class _FakeProc:
+    def __init__(self, returncode=0, stdout=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = ""
+
+
+def test_signature_gate_does_nothing_when_disabled(monkeypatch):
+    calls = []
+    monkeypatch.setattr(su, "VERIFY", False)
+    monkeypatch.setattr(su, "run", lambda *a, **k: calls.append(a) or _FakeProc())
+    su.verify_signature("deadbeef")
+    assert calls == []
+
+
+def test_signature_gate_verifies_commit_when_not_a_tag(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if "describe" in cmd:
+            return _FakeProc(returncode=1)
+        return _FakeProc()
+
+    monkeypatch.setattr(su, "VERIFY", True)
+    monkeypatch.setattr(su, "run", fake_run)
+    su.verify_signature("deadbeef")
+    assert any("verify-commit" in c for c in calls)
+    assert not any("verify-tag" in c for c in calls)
+
+
+def test_signature_gate_verifies_tag_when_exact_match(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if "describe" in cmd:
+            return _FakeProc(returncode=0, stdout="v1.0.0\n")
+        return _FakeProc()
+
+    monkeypatch.setattr(su, "VERIFY", True)
+    monkeypatch.setattr(su, "run", fake_run)
+    su.verify_signature("deadbeef")
+    assert any("verify-tag" in c and "v1.0.0" in c for c in calls)
+
+
+def test_signature_failure_aborts_update(monkeypatch):
+    """A failed verification must raise before build/stage are reached."""
+    import subprocess
+
+    monkeypatch.setattr(su, "VERIFY", True)
+
+    def fake_run(cmd, **kw):
+        if "describe" in cmd:
+            return _FakeProc(returncode=1)
+        if "verify-commit" in cmd:
+            raise subprocess.CalledProcessError(1, cmd)
+        return _FakeProc()
+
+    monkeypatch.setattr(su, "run", fake_run)
+    try:
+        su.verify_signature("deadbeef")
+    except subprocess.CalledProcessError:
+        return
+    raise AssertionError("unsigned commit must not pass verification")

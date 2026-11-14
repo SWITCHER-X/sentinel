@@ -922,6 +922,25 @@ class SentinelDashboard {
     list.appendChild(frag);
   }
 
+  lineageState(tree) {
+    const threats = tree.threat_count || 0;
+    if (tree.blocked) return { tone: 'blocked', text: 'blocked' };
+    if (tree.trusted) return { tone: 'trusted', text: 'trusted' };
+    if (threats > 0) return { tone: 'threat', text: `${threats} threat${threats !== 1 ? 's' : ''}` };
+    const age = (Date.now() / 1000) - (tree.first_seen || 0);
+    if (age >= 600) return { tone: 'stable', text: 'stable' };
+    return { tone: 'idle', text: 'monitoring' };
+  }
+
+  fmtAge(ts) {
+    if (!ts) return '—';
+    const secs = Math.max(0, (Date.now() / 1000) - ts);
+    if (secs < 60) return `${Math.round(secs)}s ago`;
+    if (secs < 3600) return `${Math.round(secs / 60)}m ago`;
+    if (secs < 86400) return `${Math.round(secs / 3600)}h ago`;
+    return `${Math.round(secs / 86400)}d ago`;
+  }
+
   buildLineageItem(tree) {
     const blocked = !!tree.blocked;
     const trusted = !!tree.trusted;
@@ -929,10 +948,7 @@ class SentinelDashboard {
     const nodeCount = Object.keys(tree.nodes || {}).length;
     const rootComm = tree.nodes?.[tree.root_pid]?.comm || tree.root_comm || 'root';
 
-    let state = { tone: 'idle', text: 'monitoring' };
-    if (blocked) state = { tone: 'blocked', text: 'blocked' };
-    else if (trusted) state = { tone: 'trusted', text: 'trusted' };
-    else if (threats > 0) state = { tone: 'threat', text: `${threats} threat${threats > 1 ? 's' : ''}` };
+    const state = this.lineageState(tree);
 
     const item = this.el('div', {
       class: 'lineage-item',
@@ -1591,6 +1607,23 @@ class SentinelDashboard {
       Object.entries(mitreCounts).map(([m, c]) => this.el('span', { text: `${m} ×${c}`, title: `${m} seen ${c} time(s)` }))
     );
 
+    const state = this.lineageState(tree);
+    const factRows = [
+      ['State', state.text, `is-${state.tone}`],
+      ['Root process', `${tree.nodes?.[tree.root_pid]?.comm || tree.root_comm || 'root'}${tree.root_pid != null ? ` (${tree.root_pid})` : ''}`],
+      ['Host', tree.host || '—'],
+      ['First seen', this.fmtAge(tree.first_seen)],
+      ['Processes', String(Object.keys(nodes).length)],
+      ['Events', String(events.length)],
+      ['Threats', String(tree.threat_count || 0)]
+    ];
+    const facts = this.el('div', { class: 'inspector-facts' }, factRows.map(([k, v, tone]) =>
+      this.el('div', { class: 'inspector-fact' }, [
+        this.el('span', { class: 'fact-key', text: k }),
+        this.el('span', { class: 'fact-value' + (tone ? ' ' + tone : ''), text: v })
+      ])
+    ));
+
     const actions = this.el('div', { class: 'inspector-actions' }, [
       this.el('button', { class: 'btn-primary', text: 'Block lineage', onclick: () => this.blockLineage(tree.lineage_id) }),
       this.el('button', { class: 'btn-secondary', text: 'Trust', onclick: () => this.trustLineage(tree.lineage_id) }),
@@ -1598,11 +1631,14 @@ class SentinelDashboard {
     ]);
 
     content.append(
+      section('Overview', facts),
       section('Process tree', treeBox),
       section(`Events (${events.length})`, evBody)
     );
     if (Object.keys(mitreCounts).length) content.appendChild(section('MITRE ATT&CK', mitreChips));
-    content.appendChild(actions);
+    content.appendChild(section('Operations', this.el('div', {}, [actions,
+      this.el('p', { class: 'inspector-hint', text: 'Block stops this tree everywhere it runs and is remembered. Trust only suppresses alerts for this lineage and binary.' })
+    ])));
   }
 
 

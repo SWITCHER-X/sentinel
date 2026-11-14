@@ -439,6 +439,8 @@ kbd {
 .lineage-state[data-tone="blocked"] { color: var(--crit); }
 .lineage-state[data-tone="trusted"] { color: var(--ok); }
 .lineage-state[data-tone="threat"] { color: var(--high); }
+.lineage-state[data-tone="stable"] { color: var(--ok); }
+.lineage-state[data-tone="idle"] { color: var(--ink-faint); }
 .lineage-meta { display: flex; gap: 9px; margin-top: 3px; font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--ink-faint); overflow: hidden; }
 .lineage-meta .comm { color: var(--ink-muted); }
 .lineage-empty { padding: 16px 12px; color: var(--ink-faint); font-size: var(--fs-xs); line-height: 1.5; }
@@ -468,7 +470,15 @@ kbd {
 .inspector-empty { color: var(--ink-faint); font-size: var(--fs-xs); }
 .mitre-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .mitre-chips span { padding: 2px 7px; border: 1px solid var(--line); border-radius: 999px; font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--ink-muted); background: var(--sunken); }
-.inspector-actions { display: flex; gap: 8px; padding-top: 14px; border-top: 1px solid var(--line); }
+.inspector-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; }
+.inspector-fact { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.fact-key { color: var(--ink-faint); font-size: var(--fs-2xs); }
+.fact-value { color: var(--ink); font-size: var(--fs-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fact-value.is-blocked { color: var(--crit); }
+.fact-value.is-trusted, .fact-value.is-stable { color: var(--ok); }
+.fact-value.is-threat { color: var(--high); }
+.inspector-hint { margin-top: 10px; color: var(--ink-faint); font-size: var(--fs-2xs); line-height: 1.5; }
+.inspector-actions { display: flex; gap: 8px; }
 .btn-primary { background: var(--ink); color: var(--ground); border: 0; border-radius: var(--r-sm); padding: 8px 12px; font-size: var(--fs-xs); font-weight: 600; }
 .btn-primary:hover { opacity: 0.92; }
 .btn-secondary { background: var(--sunken); color: var(--ink); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 8px 12px; font-size: var(--fs-xs); }

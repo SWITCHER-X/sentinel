@@ -876,3 +876,218 @@ rules:
   - bootloader
   - persistence
   flags: 64
+- id: 17001
+  name: 'Persistence: Systemd Unit Write via Shell'
+  pattern: (?:>>?|tee\s+(?:-a\s+)?|cp\s+|mv\s+|install\s+)[^|;]*/etc/systemd/(?:system|user)/
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1543.002
+  - T1053.006
+  tags:
+  - persistence
+  - systemd
+  - defense-evasion
+  flags: 3
+- id: 17002
+  name: 'Persistence: systemd-run Transient Unit'
+  pattern: systemd-run\s+[^|;]*(?:--unit|--scope)
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1543.002
+  - T1059.004
+  tags:
+  - persistence
+  - systemd
+  - execution
+  flags: 3
+- id: 17003
+  name: 'Persistence: SSH Authorized Keys Write'
+  pattern: (?:>>?|tee\s+(?:-a\s+)?|cp\s+|mv\s+|install\s+|sed\s+-i\s+)[^|;]*\.ssh/authorized_keys
+  action: ALERT
+  severity: CRITICAL
+  mitre:
+  - T1098.004
+  tags:
+  - persistence
+  - ssh
+  - ssh-keys
+  flags: 3
+- id: 17004
+  name: 'Defense Evasion: LD_PRELOAD Injection'
+  pattern: \bLD_PRELOAD\s*=
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1574.006
+  tags:
+  - defense-evasion
+  - library-injection
+  flags: 3
+- id: 17005
+  name: 'Defense Evasion: /etc/ld.so.preload Write'
+  pattern: (?:>>?|tee\s+(?:-a\s+)?|cp\s+|mv\s+|install\s+|sed\s+-i\s+)[^|;]*/etc/ld\.so\.preload
+  action: KILL
+  severity: CRITICAL
+  mitre:
+  - T1574.006
+  tags:
+  - defense-evasion
+  - library-injection
+  - rootkit
+  flags: 3
+- id: 17006
+  name: 'Defense Evasion: Shell History Tampering'
+  pattern: (?:history\s+-c|unset\s+HISTFILE|HISTFILE=/dev/null|>>?\s*[^|;]*_history|rm\s+[^|;]*_history|shred\s+[^|;]*_history)
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1070.003
+  tags:
+  - defense-evasion
+  - anti-forensics
+  flags: 3
+- id: 17007
+  name: 'Privilege Escalation: Setuid/Setgid chmod'
+  pattern: chmod\s+(?:[ugoa]*\+s|[0-7]*[4-7][0-7]{3})
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1548.001
+  tags:
+  - privilege-escalation
+  - suid
+  flags: 3
+- id: 17008
+  name: 'Defense Evasion: Immutable File Attribute (chattr)'
+  pattern: chattr\s+[+-][a-zA-Z]*[ia]
+  action: ALERT
+  severity: MEDIUM
+  mitre:
+  - T1222.002
+  tags:
+  - defense-evasion
+  - anti-forensics
+  flags: 3
+- id: 17009
+  name: 'Privilege Escalation: Linux Capability via setcap'
+  pattern: \bsetcap\s+[^|;]*cap_
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1548
+  tags:
+  - privilege-escalation
+  - linux-capabilities
+  flags: 3
+- id: 17010
+  name: 'Container Escape: nsenter Host Namespace Access'
+  pattern: \bnsenter\b
+  action: ALERT
+  severity: CRITICAL
+  mitre:
+  - T1611
+  tags:
+  - container-escape
+  - nsenter
+  flags: 3
+- id: 17011
+  name: 'Container Escape: Docker Socket Access'
+  pattern: docker\.sock
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1611
+  tags:
+  - container-escape
+  - container
+  flags: 3
+- id: 17012
+  name: 'Container Escape: unshare Mount Namespace'
+  pattern: unshare\s+[^|;]*(?:--mount|-m)\b
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1611
+  tags:
+  - container-escape
+  - privilege-escalation
+  flags: 3
+- id: 17013
+  name: 'Credential Access: gdb/strace Attach'
+  pattern: \b(?:gdb|strace)\b[^|;]*-p\s*[0-9]+
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1055.008
+  tags:
+  - credential-access
+  - ptrace
+  flags: 3
+- id: 17014
+  name: 'Credential Access: /proc PID Memory Read'
+  pattern: /proc/[0-9]+/mem
+  action: ALERT
+  severity: CRITICAL
+  mitre:
+  - T1003.007
+  tags:
+  - credential-access
+  - process-injection
+  flags: 3
+- id: 17015
+  name: 'Defense Evasion: System Log Tampering'
+  pattern: journalctl\s+[^|;]*(?:--rotate|--vacuum)|rm\s+-[a-zA-Z]*[rf][a-zA-Z]*\s+/var/log/
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1070.002
+  tags:
+  - defense-evasion
+  - log-tampering
+  flags: 3
+- id: 17016
+  name: 'Defense Evasion: Firewall Flush (iptables)'
+  pattern: iptables\s+[^|;]*(?:-F\b|--flush)
+  action: ALERT
+  severity: MEDIUM
+  mitre:
+  - T1562.004
+  tags:
+  - defense-evasion
+  - impact
+  flags: 3
+- id: 17017
+  name: 'Persistence: Kernel Module Config Write'
+  pattern: (?:>>?|tee\s+(?:-a\s+)?|cp\s+|mv\s+|install\s+|sed\s+-i\s+)[^|;]*/etc/(?:modprobe\.d|modules-load\.d|depmod\.d)/
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1547.006
+  tags:
+  - persistence
+  - kernel
+  flags: 3
+- id: 17018
+  name: 'Persistence: SSH Daemon Config Write'
+  pattern: (?:>>?|tee\s+(?:-a\s+)?|cp\s+|mv\s+|install\s+|sed\s+-i\s+)[^|;]*/etc/ssh/sshd_config
+  action: ALERT
+  severity: HIGH
+  mitre:
+  - T1098.004
+  tags:
+  - persistence
+  - ssh
+  flags: 3
+- id: 17019
+  name: 'Persistence: Cron File Write via Shell'
+  pattern: (?:>>?|tee\s+(?:-a\s+)?|cp\s+|mv\s+|install\s+|sed\s+-i\s+)[^|;]*/(?:etc/cron\.d/|etc/crontab|var/spool/cron/)
+  action: ALERT
+  severity: CRITICAL
+  mitre:
+  - T1053.003
+  tags:
+  - persistence
+  - cron
+  flags: 3
