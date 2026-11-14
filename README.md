@@ -349,6 +349,20 @@ command palette:
 The choice is remembered in `localStorage` (`sentinel-view-mode`). Individual
 panels can still be toggled from the palette's *View* group.
 
+### Prove enforcement works
+
+The kill switch is testable, not a claim. On the hub host:
+
+```bash
+sudo python3 tools/verify_enforcement.py
+```
+
+It logs in, switches to **enforce**, runs a process whose command line matches
+a KILL rule (`/dev/tcp/`), and asserts it dies by **SIGKILL**, that the hub
+records `killed_processes`, and that the same process **survives in learn
+mode**. The original mode is restored; the test process is harmless and is
+cleaned up even when a check fails.
+
 ### When the feed is empty
 
 The console diagnoses its own ingest path. When no events are in scope it calls
