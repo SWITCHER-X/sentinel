@@ -315,7 +315,8 @@ button.badge:hover { filter: brightness(1.18); }
 .search-wrap { position: relative; }
 .search-wrap svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--fg-dim); pointer-events: none; }
 .search-wrap input { width: 100%; padding-left: 32px; min-height: 34px; }
-.filter-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.filter-chips { display: flex; flex-wrap: nowrap; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+.filter-chips::-webkit-scrollbar { display: none; }
 .filter-chips button {
   font-family: var(--font-mono); font-size: var(--fs-micro); letter-spacing: 0.06em;
   padding: 4px 9px; border-radius: 999px; text-transform: uppercase;
@@ -591,7 +592,7 @@ button.badge:hover { filter: brightness(1.18); }
   </div>
 </header>
 
-<div data-mini-metrics id="mini-metrics" class="kpi-strip">
+<div data-mini-metrics id="mini-metrics" class="kpi-strip hidden">
   <div class="kpi">
     <div class="kpi-head"><span class="kpi-label">Events/sec</span></div>
     <canvas data-sparkline="events"></canvas>
@@ -630,10 +631,6 @@ button.badge:hover { filter: brightness(1.18); }
     <div class="pane-body">
       <div class="lineage-list" id="lineage-list" data-lineage-list role="listbox" aria-label="Lineages" tabindex="0"></div>
     </div>
-    <div class="section" style="border-top: 1px solid var(--border);">
-      <div class="eyebrow mb-2">Hosts</div>
-      <div id="host-tree" data-host-tree class="host-tree"></div>
-    </div>
   </aside>
 
   <main data-main class="feed pane">
@@ -647,7 +644,7 @@ button.badge:hover { filter: brightness(1.18); }
     </div>
   </main>
 
-  <section data-graph id="graph-panel" class="graph-panel pane">
+  <section data-graph id="graph-panel" class="graph-panel pane hidden">
     <div class="pane-head">
       <span class="eyebrow">Lineage trees</span>
       <div class="flex items-center gap-1">

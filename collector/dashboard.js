@@ -196,6 +196,21 @@ class SentinelDashboard {
     this.showToast(`Density: ${this.state.density}`, 'info');
   }
 
+  toggleMetrics() {
+    const panel = this.$('#mini-metrics');
+    if (!panel) return;
+    panel.classList.toggle('hidden');
+    this.showToast(panel.classList.contains('hidden') ? 'Metrics hidden' : 'Metrics shown', 'info');
+  }
+
+  toggleGraph() {
+    const panel = this.$('#graph-panel');
+    if (!panel) return;
+    const nowHidden = panel.classList.toggle('hidden');
+    if (!nowHidden) requestAnimationFrame(() => this.renderGraph());
+    this.showToast(nowHidden ? 'Graph hidden' : 'Graph shown', 'info');
+  }
+
   toggleSidebar() {
     this.state.sidebarCollapsed = !this.state.sidebarCollapsed;
     const sb = this.els.sidebar;
@@ -480,7 +495,7 @@ class SentinelDashboard {
     const evRate = data.events_per_sec ?? this.estimateEventRate();
     const crit = data.critical_threats ?? 0;
     const conn = this.state.connStatus || 'OFFLINE';
-    el.textContent = `${conn} · ${hosts} host${hosts !== 1 ? 's' : ''} · ${evRate} ev/min · ${lineages} lineages · ${crit} CRITICAL`;
+    el.textContent = `${conn} · ${evRate} ev/min · ${hosts} host${hosts !== 1 ? 's' : ''}${crit ? ` · ${crit} critical` : ''}`;
   }
 
   estimateEventRate() {
@@ -610,22 +625,15 @@ class SentinelDashboard {
 
   buildTimelineRow(log, index) {
     const sev = (log.severity || 'INFO').toUpperCase();
-    const sevClass = this.SEVERITY_CLASS[sev] || 'dim';
-    const killed = !!(log.killed || log.action === 'KILL' || (log.type === 'EXEC_THREAT' && log.killed !== false && sev === 'CRITICAL'));
-    const action = killed ? this.ACTION_BADGE.KILL
-      : this.EXFIL_TYPES.has(log.type) ? this.ACTION_BADGE.EXFIL
-      : log.type === 'GEO_BLOCK' ? this.ACTION_BADGE.GEO_BLOCK
-      : sev === 'HIGH' || sev === 'CRITICAL' ? this.ACTION_BADGE.BLOCK
-      : this.ACTION_BADGE.LOG;
-
+    const killed = !!(log.killed || log.action === 'KILL' ||
+      (log.type === 'EXEC_THREAT' && log.killed !== false && sev === 'CRITICAL'));
     const row = this.el('div', {
-      class: `timeline-row virtual-item flex items-center gap-2 px-2 cursor-default select-none`,
+      class: 'timeline-row virtual-item flex items-center gap-3 px-3 cursor-default select-none',
       role: 'option',
       'aria-selected': 'false',
       'data-idx': String(index),
       'data-lineage': log.lineage_id != null ? String(log.lineage_id) : '',
       style: {
-        background: index % 2 ? 'var(--bg)' : 'transparent',
         borderLeft: `3px solid ${this.SEVERITY_VAR[sev] || 'var(--fg-dim)'}`,
         borderBottom: '1px solid var(--border)',
         fontSize: 'var(--fs-sm)'
@@ -634,27 +642,19 @@ class SentinelDashboard {
       ondblclick: () => { if (log.lineage_id != null) this.openLineageDetail(log.lineage_id); }
     });
 
-    const time = this.el('span', { class: 'mono shrink-0 w-[68px]', text: this.fmt.time(log.received_at || log.ts), style: { color: 'var(--fg-muted)' } });
-    const sevDot = this.el('span', { class: 'shrink-0 w-2 h-2 rounded-full', style: { background: this.SEVERITY_VAR[sev] || 'var(--fg-dim)' }, title: sev });
-    const type = this.el('span', { class: `badge badge-${this.TYPE_BADGE[log.type] || 'dim'} shrink-0`, text: log.type || 'EVENT' });
-    const actionB = this.el('span', { class: `badge ${action.cls} shrink-0`, text: action.text });
-    const rule = this.el('span', { class: 'mono shrink-0 max-w-[140px] truncate', text: log.rule_id || log.rule_name || '—', style: { color: 'var(--accent)' }, title: log.rule_id || '' });
-    const mitre = (log.mitre && log.mitre.length)
-      ? this.el('span', { class: 'flex gap-1 shrink-0' }, log.mitre.slice(0, 3).map(m => this.el('span', { class: 'tag tag-mitre mono', text: m, title: 'MITRE ' + m })))
-      : this.el('span', { class: 'shrink-0 w-1' });
-    const pid = this.el('span', { class: 'mono shrink-0 w-[52px]', text: log.pid != null ? String(log.pid) : '—', style: { color: 'var(--fg-muted)' } });
-    const lineage = this.el('span', {
-      class: 'mono shrink-0 w-[92px] truncate cursor-pointer hover:underline',
-      text: this.fmt.shortLineage(log.lineage_id),
-      style: { color: 'var(--med)' },
-      title: this.fmt.lineage(log.lineage_id),
-      onclick: (e) => { e.stopPropagation(); if (log.lineage_id != null) this.focusLineage(log.lineage_id); }
+    // Keep the row quiet: time, severity, process, one line of context. Everything
+    // else (rule, pid, lineage, host, argv) lives in the detail drawer.
+    const time = this.el('span', { class: 'mono shrink-0 w-[64px]', text: this.fmt.time(log.received_at || log.ts), style: { color: 'var(--fg-muted)' } });
+    const dot = this.el('span', { class: 'shrink-0 w-2 h-2 rounded-full', style: { background: this.SEVERITY_VAR[sev] || 'var(--fg-dim)' }, title: sev });
+    const comm = this.el('span', { class: 'mono shrink-0 max-w-[160px] truncate font-medium', text: log.comm || log.filename || '—', title: log.comm || '' });
+    const summary = this.el('span', {
+      class: 'mono truncate flex-1 min-w-0',
+      text: log.cmdline || log.binary || log.type || '',
+      style: { color: 'var(--fg-dim)' },
+      title: log.cmdline || log.binary || ''
     });
-    const comm = this.el('span', { class: 'mono shrink-0 max-w-[110px] truncate font-medium', text: log.comm || log.filename || '—', title: log.comm || '' });
-    const host = this.el('span', { class: 'mono shrink-0 max-w-[80px] truncate', text: log.host || '—', style: { color: 'var(--fg-muted)' }, title: log.host || '' });
-    const cmd = this.el('span', { class: 'mono truncate flex-1 min-w-0', text: log.cmdline || log.binary || '', style: { color: 'var(--fg-dim)' }, title: log.cmdline || log.binary || '' });
-
-    row.append(time, sevDot, type, actionB, rule, mitre, pid, lineage, comm, host, cmd);
+    row.append(time, dot, comm, summary);
+    if (killed) row.appendChild(this.el('span', { class: 'badge badge-crit shrink-0', text: 'KILL' }));
     return row;
   }
 
@@ -1288,6 +1288,9 @@ class SentinelDashboard {
       { group: 'Actions', label: 'Toggle density', keywords: 'density compact comfortable', action: () => this.toggleDensity() },
       { group: 'Actions', label: 'Refresh all data', keywords: 'refresh reload', action: () => this.refreshAll() },
       { group: 'Actions', label: 'Clear feed', keywords: 'clear feed', action: () => this.clearFeed() },
+      { group: 'View', label: 'Toggle metrics strip', keywords: 'metrics kpi charts', action: () => this.toggleMetrics() },
+      { group: 'View', label: 'Toggle lineage graph', keywords: 'graph trees visualization', action: () => this.toggleGraph() },
+      { group: 'View', label: 'Toggle lineage sidebar', keywords: 'sidebar lineages list', action: () => this.toggleSidebar() },
       { group: 'Actions', label: 'Install updates from git', keywords: 'update upgrade git deploy', action: () => this.startUpdate() }
     );
     return items;
