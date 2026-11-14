@@ -157,14 +157,49 @@ for d in /opt /var/lib; do
   printf '    ok   free space on %s: %s MB\n' "$d" "$(( avail / 1024 ))"
 done
 
-if command -v ss >/dev/null 2>&1 && ss -ltn "sport = :$PORT" 2>/dev/null | grep -q LISTEN; then
-  OWNER=$(ss -ltnp 2>/dev/null | awk -v p=":$PORT" '$4 ~ p' | head -1)
-  if grep -q sentinel_hub_lineage <<<"$OWNER"; then
-    note "stale sentinel-hub is holding :$PORT — stopping it first"
-    pkill -f sentinel_hub_lineage 2>/dev/null || true
-    sleep 1
+port_busy() {
+  # Prefer the filter form; fall back to grepping plain ss where netlink filters
+  # are restricted (containers) or ss is missing entirely.
+  if command -v ss >/dev/null 2>&1; then
+    if ss -ltn "sport = :$PORT" >/dev/null 2>&1; then
+      ss -ltn "sport = :$PORT" 2>/dev/null | grep -q LISTEN && return 0
+    else
+      ss -ltn 2>/dev/null | grep -q ":$PORT " && return 0
+    fi
+    return 1
+  fi
+  return 1
+}
+
+port_pid() {
+  if ss -ltnp "sport = :$PORT" >/dev/null 2>&1; then
+    ss -ltnp "sport = :$PORT" 2>/dev/null | sed -nE 's/.*pid=([0-9]+).*/\1/p' | head -1
   else
-    die "port $PORT is already in use${OWNER:+ by: $OWNER} — free it or set SENTINEL_PORT"
+    ss -ltnp 2>/dev/null | grep ":$PORT " | sed -nE 's/.*pid=([0-9]+).*/\1/p' | head -1
+  fi
+}
+
+if port_busy; then
+  # ss only prints the short process name ("python"); read /proc/<pid>/cmdline
+  # to tell our hub apart from an unrelated service on the same port.
+  PORT_PID=$(port_pid || true)
+  PORT_CMD=""
+  if [[ -n "$PORT_PID" ]]; then
+    PORT_CMD=$(tr '\0' ' ' < "/proc/$PORT_PID/cmdline" 2>/dev/null || true)
+  fi
+  if [[ "$PORT_CMD" == *sentinel_hub_lineage* ]]; then
+    note "the hub is already running on :$PORT (pid $PORT_PID) — stopping it for the upgrade"
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl stop sentinel-hub 2>/dev/null || kill "$PORT_PID" 2>/dev/null || true
+    else
+      kill "$PORT_PID" 2>/dev/null || true
+    fi
+    sleep 1
+    if port_busy; then
+      die "port $PORT is still held after stopping the hub — stop it manually or set SENTINEL_PORT"
+    fi
+  else
+    die "port $PORT is in use by pid ${PORT_PID:-?} (${PORT_CMD:-unknown process}) — stop it or set SENTINEL_PORT"
   fi
 fi
 printf '    ok   port %s is free\n' "$PORT"
