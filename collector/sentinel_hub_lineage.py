@@ -31,6 +31,7 @@ app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024
 import sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sentinel_auth as sa  # noqa: E402
+import sentinel_diagnostics as diag  # noqa: E402
 
 # ─── State Backend ───
 from state import create_state_backend  # noqa: E402
@@ -665,6 +666,33 @@ def telemetry():
         return jsonify({"status": "acknowledged", "timestamp": data["received_at"]}), 200
 
     return jsonify([_wire_event(e) for e in STATE.get_telemetry_logs()])
+
+
+
+@app.route("/api/v1/diagnostics", methods=["GET"])
+def api_diagnostics():
+    """Why is the feed empty? Read-only diagnosis; never mutates state."""
+    token = request.cookies.get(SESSION_COOKIE, "")
+    if not sa.session_verify(token):
+        return jsonify({"error": "unauthorized"}), 401
+
+    stats = STATE.get_stats()
+    last = None
+    for event in STATE.get_telemetry_logs(limit=200):
+        ts = event.get("received_at") or event.get("ts")
+        if ts:
+            last = max(last or 0, float(ts))
+
+    result = diag.diagnose(
+        total_events=int(stats.get("total_events") or 0),
+        telemetry_last_ts=last,
+        db_path=os.environ.get("SENTINEL_DB_PATH"),
+        env={
+            "SENTINEL_AGENT_KEY": os.environ.get("SENTINEL_AGENT_KEY"),
+            "SENTINEL_COLLECTOR_URL": os.environ.get("SENTINEL_COLLECTOR_URL"),
+        },
+    )
+    return jsonify(result)
 
 
 @app.route("/api/v1/stats", methods=["GET"])

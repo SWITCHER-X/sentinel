@@ -349,6 +349,15 @@ command palette:
 The choice is remembered in `localStorage` (`sentinel-view-mode`). Individual
 panels can still be toggled from the palette's *View* group.
 
+### When the feed is empty
+
+The console diagnoses its own ingest path. When no events are in scope it calls
+`GET /api/v1/diagnostics` and renders the result in place: unit state for hub
+and agent, telemetry age, kernel BTF/LSM support, agent key and state-store
+writability. The first failing check names the fix and offers a copyable
+command; the palette action **Run troubleshooting diagnostics** re-runs it
+anytime. The endpoint is read-only and session-protected.
+
 ## CLI
 
 ```bash

@@ -396,6 +396,39 @@ kbd {
 .inspector-body { flex: 1; overflow-y: auto; padding: 14px; }
 
 
+
+/* ─── Troubleshooter (diagnostics) ──────────────────────────────────────── */
+.diag { width: 100%; max-width: 720px; margin-top: 4px; }
+.diag-loading { color: var(--ink-faint); font-size: var(--fs-xs); padding: 10px 0; }
+.diag-error { color: var(--crit); font-size: var(--fs-xs); }
+.diag-head { display: flex; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface); }
+.diag-head.is-ok { border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }
+.diag-head.is-warn { border-color: color-mix(in srgb, var(--high) 40%, var(--line)); }
+.diag-head.is-fail { border-color: color-mix(in srgb, var(--crit) 40%, var(--line)); }
+.diag-mark { flex-shrink: 0; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 999px; font-size: 13px; font-weight: 700; }
+.diag-head.is-ok .diag-mark { color: var(--ok); background: var(--ok-soft); }
+.diag-head.is-warn .diag-mark { color: var(--high); background: var(--high-soft); }
+.diag-head.is-fail .diag-mark { color: var(--crit); background: var(--crit-soft); }
+.diag-title { font-size: var(--fs-sm); font-weight: 600; }
+.diag-summary { margin-top: 2px; color: var(--ink-muted); font-size: var(--fs-xs); }
+.diag-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.diag-btn { padding: 5px 9px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--sunken); color: var(--ink); font-size: var(--fs-2xs); }
+.diag-btn:hover { border-color: var(--line-strong); }
+.diag-btn.is-small { padding: 2px 6px; color: var(--ink-muted); }
+.diag-list { border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; }
+.diag-item { display: flex; gap: 10px; padding: 9px 12px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.diag-item:last-child { border-bottom: 0; }
+.diag-glyph { flex-shrink: 0; width: 14px; font-size: 12px; font-weight: 700; text-align: center; }
+.diag-item.is-ok .diag-glyph { color: var(--ok); }
+.diag-item.is-warn .diag-glyph { color: var(--high); }
+.diag-item.is-fail .diag-glyph { color: var(--crit); }
+.diag-body { min-width: 0; }
+.diag-row { display: flex; align-items: center; gap: 8px; }
+.diag-check { font-size: var(--fs-xs); font-weight: 600; }
+.diag-detail { margin-top: 2px; color: var(--ink-muted); font-size: var(--fs-2xs); }
+.diag-fix { margin-top: 3px; color: var(--ink-faint); font-size: var(--fs-2xs); }
+.diag-context { margin-top: 8px; color: var(--ink-faint); font-size: var(--fs-2xs); }
+
 /* ─── Rail items (rendered by dashboard.js) ─────────────────────────────── */
 .lineage-item { padding: 9px 12px; border-bottom: 1px solid var(--line); cursor: pointer; transition: background var(--dur) var(--ease); }
 .lineage-item:hover { background: var(--raised); }
@@ -594,8 +627,8 @@ kbd {
       <div id="timeline-rows" data-timeline-rows style="position: relative;"></div>
       <div id="timeline-empty" data-timeline-empty class="empty hidden">
         <h2>No events in this scope</h2>
-        <p>The feed fills when an agent reports. Start the sensor on a monitored host, or replay demo traffic to learn the console.</p>
-        <code>sudo systemctl start sentinel-agent</code>
+        <p>The feed fills when an agent reports. This console checks the ingest path and tells you what is actually wrong.</p>
+        <div id="diagnostics" data-diagnostics class="diag"></div>
         <p id="empty-message">No events match the current filter.</p>
       </div>
     </div>
