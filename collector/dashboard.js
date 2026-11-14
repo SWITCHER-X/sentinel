@@ -525,8 +525,14 @@ class SentinelDashboard {
     const lineages = Object.keys(this.state.lineageData).length;
     const evRate = data.events_per_sec ?? this.estimateEventRate();
     const crit = data.critical_threats ?? 0;
-    const conn = this.state.connStatus || 'OFFLINE';
-    el.textContent = `${conn} · ${evRate} ev/min · ${hosts} host${hosts !== 1 ? 's' : ''}${crit ? ` · ${crit} critical` : ''}`;
+    const conn = { LIVE: 'Live', CONNECTING: 'Connecting', RECONNECTING: 'Reconnecting', DEGRADED: 'Degraded', OFFLINE: 'Offline' }[this.state.connStatus] || 'Offline';
+    el.textContent = [
+      conn,
+      `${evRate} events/min`,
+      `${hosts} host${hosts !== 1 ? 's' : ''}`,
+      `${lineages} lineage${lineages !== 1 ? 's' : ''}`,
+      crit ? `${crit} critical` : null
+    ].filter(Boolean).join(' · ');
   }
 
   estimateEventRate() {
@@ -799,9 +805,12 @@ class SentinelDashboard {
     const entries = this.filteredLineages();
     list.innerHTML = '';
     if (entries.length === 0) {
-      list.appendChild(this.el('div', { class: 'p-3 mono', style: { color: 'var(--fg-dim)', fontSize: 'var(--fs-sm)' } }, [
-        document.createTextNode(this.state.searchQuery ? `No lineages matching "${this.state.searchQuery}"` : 'No lineages tracked — waiting for agent data')
-      ]));
+      list.appendChild(this.el('div', {
+        class: 'lineage-empty',
+        text: this.state.searchQuery
+          ? `No lineages match "${this.state.searchQuery}".`
+          : 'No lineages tracked yet. They appear when an agent reports process execution.'
+      }));
       return;
     }
     const frag = document.createDocumentFragment();
@@ -818,33 +827,25 @@ class SentinelDashboard {
     const nodeCount = Object.keys(tree.nodes || {}).length;
     const rootComm = tree.nodes?.[tree.root_pid]?.comm || tree.root_comm || 'root';
 
-    const stateBadge = blocked
-      ? this.el('span', { class: 'badge badge-crit', text: 'BLOCKED' })
-      : trusted
-        ? this.el('span', { class: 'badge badge-ok', text: 'TRUSTED' })
-        : threats > 0
-          ? this.el('span', { class: 'badge badge-high', text: `${threats} THREAT${threats > 1 ? 'S' : ''}` })
-          : this.el('span', { class: 'badge badge-dim', text: 'MONITORING' });
+    let state = { tone: 'idle', text: 'monitoring' };
+    if (blocked) state = { tone: 'blocked', text: 'blocked' };
+    else if (trusted) state = { tone: 'trusted', text: 'trusted' };
+    else if (threats > 0) state = { tone: 'threat', text: `${threats} threat${threats > 1 ? 's' : ''}` };
 
     const item = this.el('div', {
-      class: 'px-2 py-1.5 cursor-pointer',
+      class: 'lineage-item',
       'data-lineage-item': String(tree.lineage_id ?? ''),
       role: 'option',
-      style: {
-        borderBottom: '1px solid var(--border)',
-        borderLeft: `3px solid ${blocked ? 'var(--crit)' : trusted ? 'var(--ok)' : threats > 0 ? 'var(--high)' : 'transparent'}`,
-        background: 'transparent'
-      },
       onclick: () => { this.focusLineage(tree.lineage_id); this.openLineageDetail(tree.lineage_id); },
       oncontextmenu: (e) => { e.preventDefault(); this.showLineageContextMenu(e, tree.lineage_id); }
     }, [
-      this.el('div', { class: 'flex items-center justify-between gap-2' }, [
-        this.el('span', { class: 'mono truncate', text: this.fmt.shortLineage(tree.lineage_id), style: { color: 'var(--accent)', fontSize: 'var(--fs-sm)' }, title: this.fmt.lineage(tree.lineage_id) }),
-        stateBadge
+      this.el('div', { class: 'lineage-row' }, [
+        this.el('span', { class: 'lineage-id', text: this.fmt.shortLineage(tree.lineage_id), title: this.fmt.lineage(tree.lineage_id) }),
+        this.el('span', { class: 'lineage-state', 'data-tone': state.tone, text: state.text })
       ]),
-      this.el('div', { class: 'flex items-center gap-2 mono', style: { color: 'var(--fg-muted)', fontSize: '9px', marginTop: '2px' } }, [
+      this.el('div', { class: 'lineage-meta' }, [
         this.el('span', { text: `pid ${tree.root_pid ?? '—'}` }),
-        this.el('span', { text: rootComm, style: { color: 'var(--fg)' } }),
+        this.el('span', { class: 'comm', text: rootComm }),
         this.el('span', { text: `${nodeCount} proc${nodeCount !== 1 ? 's' : ''}` }),
         this.el('span', { text: tree.host || '' })
       ])
@@ -852,25 +853,27 @@ class SentinelDashboard {
     return item;
   }
 
+
   showLineageContextMenu(evt, lineageId) {
     this.removeContextMenu();
     const menu = this.el('div', {
       id: 'ctx-menu',
-      class: 'fixed z-[1001] py-1',
-      style: { background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)', borderRadius: '4px', boxShadow: '0 8px 24px rgba(0,0,0,0.4)', minWidth: '160px', left: Math.min(evt.clientX, window.innerWidth - 180) + 'px', top: Math.min(evt.clientY, window.innerHeight - 140) + 'px' },
-      role: 'menu'
+      class: 'ctx-menu',
+      role: 'menu',
+      style: {
+        left: Math.min(evt.clientX, window.innerWidth - 188) + 'px',
+        top: Math.min(evt.clientY, window.innerHeight - 170) + 'px'
+      }
     });
     const mkItem = (label, fn, danger) => this.el('button', {
-      class: 'w-full text-left px-3 py-1.5 mono',
+      class: 'ctx-item',
       text: label,
-      style: { fontSize: 'var(--fs-sm)', color: danger ? 'var(--crit)' : 'var(--fg)' },
-      onmouseenter: (e) => { e.target.style.background = 'var(--bg-sunken)'; },
-      onmouseleave: (e) => { e.target.style.background = 'transparent'; },
+      'data-danger': danger ? '1' : '0',
       onclick: () => { this.removeContextMenu(); fn(); }
     });
     menu.append(
       mkItem('Focus in graph', () => this.focusLineage(lineageId)),
-      mkItem('Open detail', () => this.openLineageDetail(lineageId)),
+      mkItem('Open inspector', () => this.openLineageDetail(lineageId)),
       mkItem('Copy lineage ID', () => { navigator.clipboard?.writeText(this.fmt.lineage(lineageId)); this.showToast('Lineage ID copied', 'success'); }),
       mkItem('Block lineage', () => this.blockLineage(lineageId), true),
       mkItem('Trust lineage', () => this.trustLineage(lineageId))
@@ -878,6 +881,7 @@ class SentinelDashboard {
     document.body.appendChild(menu);
     setTimeout(() => document.addEventListener('click', this.removeContextMenu.bind(this), { once: true }), 0);
   }
+
 
   removeContextMenu() { this.$('#ctx-menu')?.remove(); }
 
@@ -1342,27 +1346,28 @@ class SentinelDashboard {
     if (!container) return;
     const q = query.trim().toLowerCase();
     const all = this.buildPaletteIndex();
-    const results = q ? all.filter(i => i.label.toLowerCase().includes(q) || i.keywords.toLowerCase().includes(q)).slice(0, 30) : all.slice(0, 20);
+    const results = q
+      ? all.filter(i => i.label.toLowerCase().includes(q) || i.keywords.toLowerCase().includes(q)).slice(0, 30)
+      : all.slice(0, 20);
     this.state.paletteResults = results;
     this.state.paletteIndex = results.length ? 0 : -1;
     container.innerHTML = '';
     if (!results.length) {
-      container.appendChild(this.el('div', { class: 'p-3 mono', style: { color: 'var(--fg-dim)', fontSize: 'var(--fs-sm)' } }, [document.createTextNode(`No results for "${query}"`)]));
+      container.appendChild(this.el('div', { class: 'palette-empty', text: `No matches for "${query}".` }));
       return;
     }
     let lastGroup = null;
     results.forEach((item, i) => {
       if (item.group !== lastGroup) {
-        container.appendChild(this.el('div', { class: 'px-2 pt-2 pb-1 mono', style: { color: 'var(--fg-dim)', fontSize: '9px', textTransform: 'uppercase', letterSpacing: '0.5px' }, text: item.group }));
+        container.appendChild(this.el('div', { class: 'palette-group', text: item.group }));
         lastGroup = item.group;
       }
-      const selected = i === this.state.paletteIndex;
+      const active = i === this.state.paletteIndex;
       const row = this.el('div', {
-        class: 'px-3 py-1.5 cursor-pointer rounded',
+        class: `palette-item${active ? ' is-active' : ''}`,
         'data-palette-result': String(i),
         role: 'option',
-        'aria-selected': selected ? 'true' : 'false',
-        style: { fontSize: 'var(--fs-sm)', background: selected ? 'var(--bg-sunken)' : 'transparent', borderLeft: selected ? '2px solid var(--accent)' : '2px solid transparent' },
+        'aria-selected': active ? 'true' : 'false',
         onclick: () => { this.closeCommandPalette(); item.action(); },
         onmouseenter: () => { this.state.paletteIndex = i; this.renderPaletteHighlight(); }
       }, [document.createTextNode(item.label)]);
@@ -1370,16 +1375,17 @@ class SentinelDashboard {
     });
   }
 
+
   renderPaletteHighlight() {
     const rows = this.$$('[data-palette-result]', this.els.paletteResults);
     rows.forEach(r => {
-      const i = Number(r.dataset.paletteResult);
-      const on = i === this.state.paletteIndex;
-      r.style.background = on ? 'var(--bg-sunken)' : 'transparent';
-      r.style.borderLeft = on ? '2px solid var(--accent)' : '2px solid transparent';
+      const on = Number(r.dataset.paletteResult) === this.state.paletteIndex;
+      r.classList.toggle('is-active', on);
+      r.setAttribute('aria-selected', on ? 'true' : 'false');
       if (on && r.scrollIntoView) r.scrollIntoView({ block: 'nearest' });
     });
   }
+
 
   movePaletteSelection(delta) {
     const n = this.state.paletteResults.length;
@@ -1445,7 +1451,6 @@ class SentinelDashboard {
     if (!content) return;
     content.innerHTML = '';
 
-    // Process tree (ASCII)
     const nodes = tree.nodes || {};
     const rootPid = tree.root_pid;
     const lines = [];
@@ -1453,53 +1458,50 @@ class SentinelDashboard {
     const walk = (pid, prefix, isLast, depth) => {
       const n = nodes[pid] || Object.values(nodes).find(x => String(x.pid) === String(pid));
       if (!n) return;
-      const connector = depth === 0 ? '' : (isLast ? '└── ' : '├── ');
-      lines.push(`${prefix}${connector}${n.comm || '?'} (${n.pid})${n.severity ? ' [' + n.severity + ']' : ''}`);
+      lines.push(`${prefix}${depth === 0 ? '' : (isLast ? '└ ' : '├ ')}${n.comm || '?'} (${n.pid})`);
       const kids = childrenOf(n.pid);
-      kids.forEach((k, i) => walk(k.pid, prefix + (depth === 0 ? '' : (isLast ? '    ' : '│   ')), i === kids.length - 1, depth + 1));
+      kids.forEach((k, i) => walk(k.pid, prefix + (depth === 0 ? '' : (isLast ? '  ' : '│ ')), i === kids.length - 1, depth + 1));
     };
     if (rootPid != null && nodes[rootPid]) walk(rootPid, '', true, 0);
     else Object.values(nodes).slice(0, 50).forEach(n => lines.push(`${n.comm || '?'} (${n.pid})`));
 
-    const treeBox = this.el('pre', {
-      class: 'mono p-2 rounded overflow-x-auto',
-      style: { background: 'var(--mono-bg)', color: 'var(--mono-fg)', fontSize: 'var(--fs-sm)', lineHeight: '1.5', border: '1px solid var(--border)' },
-      text: lines.length ? lines.join('\n') : '(no process data)'
-    });
+    const section = (title, body) => this.el('div', { class: 'inspector-section' }, [
+      this.el('h3', { text: title }),
+      body
+    ]);
 
-    const events = this.state.rawLogs.filter(l => l.lineage_id != null && String(l.lineage_id) === String(tree.lineage_id)).slice(0, 100);
-    const evList = this.el('div', {}, events.map(l => this.el('div', {
-      class: 'flex items-center gap-2 py-1',
-      style: { borderBottom: '1px solid var(--border)', fontSize: 'var(--fs-sm)' }
-    }, [
-      this.el('span', { class: 'mono shrink-0', text: this.fmt.time(l.received_at || l.ts), style: { color: 'var(--fg-muted)' } }),
-      this.el('span', { class: 'badge badge-' + (this.TYPE_BADGE[l.type] || 'dim'), text: l.type || 'EVENT' }),
-      this.el('span', { class: 'mono truncate', text: l.rule_id || l.comm || '', style: { color: 'var(--accent)' } })
+    const treeBox = this.el('pre', { class: 'inspector-tree', text: lines.length ? lines.join('\n') : '(no process data)' });
+
+    const events = this.state.rawLogs
+      .filter(l => l.lineage_id != null && String(l.lineage_id) === String(tree.lineage_id))
+      .slice(0, 100);
+    const evList = this.el('div', { class: 'inspector-events' }, events.map(l => this.el('div', { class: 'inspector-event' }, [
+      this.el('span', { class: 't', text: this.fmt.time(l.received_at || l.ts) }),
+      this.el('span', { class: 'type', text: l.type || 'event' }),
+      this.el('span', { class: 'rule', text: l.rule_id || l.comm || '—', title: l.cmdline || '' })
     ])));
+    const evBody = events.length ? evList : this.el('div', { class: 'inspector-empty', text: 'No events recorded for this lineage.' });
 
     const mitreCounts = {};
     for (const l of events) for (const m of (l.mitre || [])) mitreCounts[m] = (mitreCounts[m] || 0) + 1;
-
-    content.append(
-      this.el('div', { class: 'mono mb-1', style: { color: 'var(--fg-muted)', fontSize: '9px', textTransform: 'uppercase' }, text: 'Process Tree' }),
-      treeBox,
-      this.el('div', { class: 'mono mt-3 mb-1', style: { color: 'var(--fg-muted)', fontSize: '9px', textTransform: 'uppercase' }, text: `Events (${events.length})` }),
-      evList.children.length ? evList : this.el('div', { class: 'mono', style: { color: 'var(--fg-dim)', fontSize: 'var(--fs-sm)' }, text: 'No events for this lineage' })
+    const mitreChips = this.el('div', { class: 'mitre-chips' },
+      Object.entries(mitreCounts).map(([m, c]) => this.el('span', { text: `${m} ×${c}`, title: `${m} seen ${c} time(s)` }))
     );
 
-    if (Object.keys(mitreCounts).length) {
-      const heat = this.el('div', { class: 'flex flex-wrap gap-1 mt-1' }, Object.entries(mitreCounts).map(([m, c]) =>
-        this.el('span', { class: 'tag tag-mitre mono', text: `${m} ×${c}`, title: `MITRE ${m} seen ${c} time(s)` })));
-      content.append(this.el('div', { class: 'mono mt-3 mb-1', style: { color: 'var(--fg-muted)', fontSize: '9px', textTransform: 'uppercase' }, text: 'MITRE ATT&CK' }), heat);
-    }
-
-    const actions = this.el('div', { class: 'flex gap-2 mt-4 pt-3', style: { borderTop: '1px solid var(--border)' } }, [
-      this.el('button', { class: 'px-3 py-1.5 mono rounded', text: 'BLOCK LINEAGE', style: { background: 'rgba(255,59,48,0.15)', border: '1px solid rgba(255,59,48,0.3)', color: 'var(--crit)', fontSize: 'var(--fs-sm)' }, onclick: () => this.blockLineage(tree.lineage_id) }),
-      this.el('button', { class: 'px-3 py-1.5 mono rounded', text: 'TRUST', style: { background: 'var(--bg-sunken)', border: '1px solid var(--border)', color: 'var(--fg)', fontSize: 'var(--fs-sm)' }, onclick: () => this.trustLineage(tree.lineage_id) }),
-      this.el('button', { class: 'px-3 py-1.5 mono rounded', text: 'COPY ID', style: { background: 'var(--bg-sunken)', border: '1px solid var(--border)', color: 'var(--fg)', fontSize: 'var(--fs-sm)' }, onclick: () => { navigator.clipboard?.writeText(this.fmt.lineage(tree.lineage_id)); this.showToast('Copied', 'success'); } })
+    const actions = this.el('div', { class: 'inspector-actions' }, [
+      this.el('button', { class: 'btn-primary', text: 'Block lineage', onclick: () => this.blockLineage(tree.lineage_id) }),
+      this.el('button', { class: 'btn-secondary', text: 'Trust', onclick: () => this.trustLineage(tree.lineage_id) }),
+      this.el('button', { class: 'btn-secondary', text: 'Copy ID', onclick: () => { navigator.clipboard?.writeText(this.fmt.lineage(tree.lineage_id)); this.showToast('Lineage ID copied', 'success'); } })
     ]);
+
+    content.append(
+      section('Process tree', treeBox),
+      section(`Events (${events.length})`, evBody)
+    );
+    if (Object.keys(mitreCounts).length) content.appendChild(section('MITRE ATT&CK', mitreChips));
     content.appendChild(actions);
   }
+
 
   // ─── Actions ───
   exportJSON() {

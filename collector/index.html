@@ -395,6 +395,54 @@ kbd {
 .inspector-head .id { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--ink-muted); }
 .inspector-body { flex: 1; overflow-y: auto; padding: 14px; }
 
+
+/* ─── Rail items (rendered by dashboard.js) ─────────────────────────────── */
+.lineage-item { padding: 9px 12px; border-bottom: 1px solid var(--line); cursor: pointer; transition: background var(--dur) var(--ease); }
+.lineage-item:hover { background: var(--raised); }
+.lineage-item.selected { background: var(--accent-soft); }
+.lineage-item .lineage-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.lineage-id { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lineage-state { flex-shrink: 0; font-size: var(--fs-2xs); color: var(--ink-faint); }
+.lineage-state[data-tone="blocked"] { color: var(--crit); }
+.lineage-state[data-tone="trusted"] { color: var(--ok); }
+.lineage-state[data-tone="threat"] { color: var(--high); }
+.lineage-meta { display: flex; gap: 9px; margin-top: 3px; font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--ink-faint); overflow: hidden; }
+.lineage-meta .comm { color: var(--ink-muted); }
+.lineage-empty { padding: 16px 12px; color: var(--ink-faint); font-size: var(--fs-xs); line-height: 1.5; }
+
+/* ─── Palette rows ──────────────────────────────────────────────────────── */
+.palette-group { padding: 10px 10px 4px; font-size: var(--fs-2xs); color: var(--ink-faint); }
+.palette-item { padding: 8px 10px; border-radius: var(--r-sm); font-size: var(--fs-sm); color: var(--ink); cursor: pointer; }
+.palette-item:hover { background: var(--raised); }
+.palette-item.is-active { background: var(--sunken); }
+.palette-empty { padding: 14px 10px; color: var(--ink-faint); font-size: var(--fs-xs); }
+
+/* ─── Context menu ──────────────────────────────────────────────────────── */
+.ctx-menu { position: fixed; z-index: 1001; min-width: 172px; padding: 4px; background: var(--raised); border: 1px solid var(--line-strong); border-radius: var(--r-md); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45); }
+.ctx-item { display: block; width: 100%; text-align: left; padding: 7px 9px; border-radius: var(--r-sm); font-size: var(--fs-xs); color: var(--ink); }
+.ctx-item:hover { background: var(--sunken); }
+.ctx-item[data-danger="1"] { color: var(--crit); }
+
+/* ─── Inspector content ─────────────────────────────────────────────────── */
+.inspector-section { margin-bottom: 18px; }
+.inspector-section h3 { font-size: var(--fs-xs); font-weight: 600; color: var(--ink-muted); margin-bottom: 8px; }
+.inspector-tree { margin: 0; padding: 10px 12px; background: var(--sunken); border: 1px solid var(--line); border-radius: var(--r-sm); font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.55; color: var(--ink-muted); overflow-x: auto; }
+.inspector-events { border-top: 1px solid var(--line); }
+.inspector-event { display: grid; grid-template-columns: 62px 92px minmax(0, 1fr); gap: 10px; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: var(--fs-xs); }
+.inspector-event .t { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--ink-faint); }
+.inspector-event .type { color: var(--ink-muted); }
+.inspector-event .rule { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inspector-empty { color: var(--ink-faint); font-size: var(--fs-xs); }
+.mitre-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.mitre-chips span { padding: 2px 7px; border: 1px solid var(--line); border-radius: 999px; font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--ink-muted); background: var(--sunken); }
+.inspector-actions { display: flex; gap: 8px; padding-top: 14px; border-top: 1px solid var(--line); }
+.btn-primary { background: var(--ink); color: var(--ground); border: 0; border-radius: var(--r-sm); padding: 8px 12px; font-size: var(--fs-xs); font-weight: 600; }
+.btn-primary:hover { opacity: 0.92; }
+.btn-secondary { background: var(--sunken); color: var(--ink); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 8px 12px; font-size: var(--fs-xs); }
+.btn-secondary:hover { border-color: var(--line-strong); }
+.btn-danger { background: var(--crit-soft); color: var(--crit); border: 1px solid color-mix(in srgb, var(--crit) 40%, var(--line)); border-radius: var(--r-sm); padding: 8px 12px; font-size: var(--fs-xs); font-weight: 600; }
+.btn-danger:hover { background: color-mix(in srgb, var(--crit) 20%, transparent); }
+
 /* ─── Utilities used by dashboard.js-rendered nodes ─────────────────────── */
 .flex { display: flex; } .flex-col { flex-direction: column; } .flex-wrap { flex-wrap: wrap; }
 .flex-1 { flex: 1 1 0%; } .items-center { align-items: center; } .items-start { align-items: flex-start; }

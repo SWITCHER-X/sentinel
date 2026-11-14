@@ -92,3 +92,21 @@ pointers get 40 px targets.
 No gradient text, no glass/blur decoration, no coloured left borders on rows,
 no sparklines or hero metric tiles, no eyebrow labels, no emoji icons, no
 monospace as a costume.
+
+## Module-rendered components
+
+`dashboard.js` builds the rail, palette and inspector; they use classes, not
+inline colour, so they follow the same tokens as the shell.
+
+- **Lineage item**: two lines — id (mono, accent) opposite a state word
+  (`monitoring`, `N threats`, `trusted`, `blocked`, coloured by meaning), then a
+  mono meta line (`pid · comm · N procs · host`). Hover/selected are background
+  states; no coloured bars.
+- **Palette row**: full-width text row, hover/`is-active` background only.
+  Group labels are sentence case in UI type, not tracked mono caps.
+- **Context menu**: raised surface, hairline border, 12 px rows, destructive
+  action in `--crit`.
+- **Inspector**: sections with a 12 px medium heading, a mono process tree in a
+  sunken well, event rows on a three-column grid (time · type · rule), MITRE
+  chips, and sentence-case actions (`Block lineage`, `Trust`, `Copy ID`).
+- **Status line**: `Live · 12 events/min · 1 host · 3 lineages · 2 critical`.
