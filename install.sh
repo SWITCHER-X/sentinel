@@ -424,7 +424,15 @@ if command -v systemctl >/dev/null 2>&1; then
   install -m 644 "$SRC_DIR/deploy/sentinel-update.service" /etc/systemd/system/
   systemctl daemon-reload
   systemctl enable --now sentinel-hub
-  note "sentinel-hub enabled (gunicorn, reload = zero-downtime cutover)"
+  # wait for the hub to actually answer: the agent's first POST should land
+  HUB_UP=0
+  for _ in $(seq 1 40); do
+    if curl -sf --max-time 2 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then HUB_UP=1; break; fi
+    sleep 0.5
+  done
+  [[ $HUB_UP -eq 1 ]] && note "sentinel-hub enabled + running at boot" \
+                      || note "WARN: hub did not answer /health within 20s"
+
 
   # Let the unprivileged hub trigger exactly one root action: the updater.
   SUDOERS_FILE=/etc/sudoers.d/sentinel-update
@@ -445,10 +453,44 @@ if command -v systemctl >/dev/null 2>&1; then
 
     install -m 644 "$SRC_DIR/deploy/sentinel-agent.service" /etc/systemd/system/
     systemctl daemon-reload
-    systemctl enable sentinel-agent 2>/dev/null || true
-    systemctl start sentinel-agent 2>/dev/null \
-      && note "sentinel-agent started" \
-      || note "WARN: sentinel-agent did not start (no BPF support?) — the hub still works"
+    # enabled = it comes back after every reboot without an operator
+    systemctl enable sentinel-agent >/dev/null 2>&1 || true
+    systemctl reset-failed sentinel-agent >/dev/null 2>&1 || true
+
+    if [[ $HUB_UP -eq 1 ]]; then
+      : # hub already healthy; start straight away
+    else
+      for _ in $(seq 1 20); do
+        curl -sf --max-time 2 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1 && break
+        sleep 0.5
+      done
+    fi
+
+    systemctl start sentinel-agent >/dev/null 2>&1 || true
+    AGENT_UP=0
+    for _ in $(seq 1 20); do
+      if systemctl is-active --quiet sentinel-agent; then AGENT_UP=1; break; fi
+      sleep 0.5
+    done
+    # one retry: a boot-time BPF load failure can be transient (module/bpf fs)
+    if [[ $AGENT_UP -eq 0 ]]; then
+      systemctl reset-failed sentinel-agent >/dev/null 2>&1 || true
+      systemctl start sentinel-agent >/dev/null 2>&1 || true
+      for _ in $(seq 1 20); do
+        if systemctl is-active --quiet sentinel-agent; then AGENT_UP=1; break; fi
+        sleep 0.5
+      done
+    fi
+
+    if [[ $AGENT_UP -eq 1 ]]; then
+      note "sentinel-agent enabled + running at boot"
+    else
+      note "WARN: sentinel-agent is not active — it will keep retrying every 5s"
+      note "      hub still works; last agent lines:"
+      command -v journalctl >/dev/null 2>&1 \
+        && journalctl -u sentinel-agent -n 10 --no-pager 2>/dev/null | sed 's/^/       /' \
+        || true
+    fi
   fi
   step_ok "services installed"
 else
@@ -497,6 +539,8 @@ py_import()       { "$OPT/.venv/bin/python" -c "import $1"; }
 health_ok()       { curl -sf --max-time 3 -H "X-Sentinel-Key: ${AGENT_KEY_SYNCED:-}" "http://127.0.0.1:$PORT/health" 2>/dev/null | grep -qE '"status":"(ok|healthy)"'; }
 page_ok()         { curl -sf --max-time 3 -o /dev/null "http://127.0.0.1:$PORT/login"; }
 agent_active()    { systemctl is-active --quiet sentinel-agent 2>/dev/null; }
+hub_enabled()     { systemctl is-enabled --quiet sentinel-hub 2>/dev/null; }
+agent_enabled()   { systemctl is-enabled --quiet sentinel-agent 2>/dev/null; }
 update_ready()    { [[ -f /etc/sudoers.d/sentinel-update ]] && [[ -f /etc/systemd/system/sentinel-update.service ]]; }
 state_owned()     { [[ "$(stat -c %U "$VARLIB" 2>/dev/null)" == "sentinel" ]] && \
                     { [[ ! -e "$VARLIB/sentinel.db" ]] || [[ "$(stat -c %U "$VARLIB/sentinel.db")" == "sentinel" ]]; }; }
@@ -543,9 +587,11 @@ else
   run_warn "dashboard login page reachable (start it manually)" page_ok
   run_warn "admin login with the env password (start it manually)" login_ok
 fi
+run_chk  "sentinel-hub enabled at boot" hub_enabled
 if [[ $HUB_ONLY -eq 0 ]]; then
   run_chk  "CO-RE object built" have_file "$OPT/build/sentinel_lineage_core.o"
   run_chk  "libbpf loader built" have_exe "$OPT/build/sentinel-loader"
+  run_chk  "sentinel-agent enabled at boot" agent_enabled
   run_warn "sentinel-agent is active" agent_active
 fi
 
@@ -577,6 +623,11 @@ printf '  Config    : %s\n' "$GEN_CAT"
 printf '  State     : %s\n' "$VARLIB"
 printf '  Logs      : journalctl -u sentinel-hub -f\n'
 if [[ $HUB_ONLY -eq 0 ]]; then printf '  Agent log : journalctl -u sentinel-agent -f\n'; fi
+if [[ $SYSTEMD -eq 1 ]]; then
+  printf '  Boot      : hub %s, agent %s (auto-start on reboot)\n' \
+    "$(systemctl is-enabled sentinel-hub 2>/dev/null || echo unknown)" \
+    "$([[ $HUB_ONLY -eq 0 ]] && systemctl is-enabled sentinel-agent 2>/dev/null || echo n/a)"
+fi
 printf '  Checks    : %s passed, %s failed, %s warning(s)\n' "$CHECKS_PASS" "$CHECKS_FAIL" "$CHECKS_WARN"
 printf '  Uninstall : sudo %s/uninstall.sh\n' "$OPT"
 
