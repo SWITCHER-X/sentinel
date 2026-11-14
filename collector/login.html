@@ -5,141 +5,81 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="color-scheme" content="dark light">
 <title>SENTINEL — Sign in</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
 <script>
   (function() {
     try {
-      var theme = localStorage.getItem('sentinel-theme');
-      if (!theme) theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-      document.documentElement.setAttribute('data-theme', theme);
+      var t = localStorage.getItem('sentinel-theme');
+      if (!t) t = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', t);
     } catch (e) {}
   })();
 </script>
 <style>
 :root {
-  --bg: #070b10;
-  --bg-elevated: #0c1219;
-  --bg-sunken: #04070a;
-  --fg: #e7edf3;
-  --fg-muted: #94a3b5;
-  --fg-dim: #5b6b7c;
-  --accent: #2dd4bf;
-  --accent-soft: rgba(45, 212, 191, 0.12);
-  --crit: #ff6b6b;
-  --border: #182330;
-  --border-strong: #2a3a4a;
-  --radius: 8px;
-  --font-ui: 'IBM Plex Sans', system-ui, sans-serif;
-  --font-display: 'Space Grotesk', 'IBM Plex Sans', sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
-  --transition: 140ms cubic-bezier(0.4, 0, 0.2, 1);
+  --ground: #101112; --surface: #151719; --sunken: #0b0c0d;
+  --line: #25292d; --line-strong: #363c43;
+  --ink: #e8e6e3; --ink-muted: #a6a39f; --ink-faint: #8a8f94;
+  --accent: #8fb0d9; --accent-soft: rgba(143,176,217,0.12);
+  --crit: #e2685f;
+  --font-ui: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --r-sm: 4px; --r-md: 6px; --dur: 140ms; --ease: cubic-bezier(0.2,0,0,1);
 }
 [data-theme="light"] {
-  --bg: #f4f7fa;
-  --bg-elevated: #ffffff;
-  --bg-sunken: #e9eef4;
-  --fg: #0f1a24;
-  --fg-muted: #4a5a6b;
-  --fg-dim: #8a99a8;
-  --accent: #0f766e;
-  --accent-soft: rgba(15, 118, 110, 0.10);
-  --crit: #b91c1c;
-  --border: #d6dee7;
-  --border-strong: #b3c0cd;
+  --ground: #f3f1ec; --surface: #fbfaf7; --sunken: #e9e6e0;
+  --line: #dcd8d1; --line-strong: #c3beb5;
+  --ink: #17191b; --ink-muted: #54585c; --ink-faint: #777c81;
+  --accent: #3f6f9f; --accent-soft: rgba(63,111,159,0.10);
+  --crit: #a8342b;
 }
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
-}
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition-duration: 0.01ms !important; } }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
-  font-family: var(--font-ui);
-  font-size: 13px;
-  background:
-    radial-gradient(900px 480px at 50% -10%, var(--accent-soft), transparent 65%),
-    var(--bg);
-  color: var(--fg);
-  min-height: 100vh;
-  display: grid;
-  place-items: center;
-  padding: 24px;
+  font-family: var(--font-ui); font-size: 0.8125rem; line-height: 1.45;
+  background: var(--ground); color: var(--ink);
+  min-height: 100vh; display: grid; place-items: center; padding: 24px;
   -webkit-font-smoothing: antialiased;
 }
 ::selection { background: var(--accent-soft); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+input { caret-color: var(--accent); }
 .card {
-  width: 100%; max-width: 384px; padding: 30px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45), 0 1px 0 rgba(255, 255, 255, 0.03) inset;
+  width: 100%; max-width: 360px; padding: 28px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md);
 }
-.brand { display: flex; align-items: center; gap: 11px; margin-bottom: 6px; }
-.brand-mark {
-  display: grid; place-items: center; width: 34px; height: 34px;
-  border-radius: 10px; color: var(--accent);
-  background: linear-gradient(155deg, var(--accent-soft), transparent 70%);
-  border: 1px solid rgba(45, 212, 191, 0.35);
-  box-shadow: 0 0 20px rgba(45, 212, 191, 0.12);
-}
-.brand-name {
-  font-family: var(--font-display); font-weight: 700; font-size: 17px;
-  letter-spacing: 0.13em; line-height: 1.1;
-}
-.brand-sub {
-  font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.16em;
-  text-transform: uppercase; color: var(--fg-dim);
-}
-.sub { color: var(--fg-muted); font-size: 12px; margin: 4px 0 24px; }
+.brand { display: flex; align-items: baseline; gap: 8px; margin-bottom: 26px; }
+.brand strong { font-size: 0.9375rem; font-weight: 650; letter-spacing: 0.02em; }
+.brand span { color: var(--ink-faint); font-size: 0.75rem; }
 label {
-  display: block; font-family: var(--font-mono); font-size: 9px; font-weight: 600;
-  text-transform: uppercase; letter-spacing: 0.12em; color: var(--fg-dim);
-  margin: 14px 0 6px;
+  display: block; margin: 14px 0 6px;
+  color: var(--ink-muted); font-size: 0.75rem;
 }
 input {
-  width: 100%; height: 38px; padding: 0 11px;
-  background: var(--bg-sunken); border: 1px solid var(--border);
-  color: var(--fg); border-radius: 6px; font-family: var(--font-mono); font-size: 12px;
-  transition: border-color var(--transition), box-shadow var(--transition);
+  width: 100%; height: 36px; padding: 0 10px;
+  background: var(--sunken); color: var(--ink);
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  font: inherit;
+  transition: border-color var(--dur) var(--ease);
 }
-input:hover { border-color: var(--border-strong); }
-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+input:hover { border-color: var(--line-strong); }
+input:focus { outline: none; border-color: var(--accent); }
 button {
-  width: 100%; height: 40px; margin-top: 22px;
-  background: var(--accent); color: #04140f; border: none; border-radius: 6px;
-  font-family: var(--font-mono); font-weight: 700; font-size: 11px;
-  letter-spacing: 0.12em; text-transform: uppercase; cursor: pointer;
-  transition: filter var(--transition), transform var(--transition);
+  width: 100%; height: 38px; margin-top: 20px;
+  background: var(--ink); color: var(--ground);
+  border: 0; border-radius: var(--r-sm);
+  font: inherit; font-weight: 600; font-size: 0.8125rem; cursor: pointer;
+  transition: opacity var(--dur) var(--ease);
 }
-button:hover { filter: brightness(1.08); }
-button:active { transform: translateY(1px); }
-button:disabled { opacity: 0.6; cursor: progress; }
-button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.err {
-  min-height: 16px; margin-top: 12px; color: var(--crit);
-  font-family: var(--font-mono); font-size: 11px;
-}
-.hint {
-  margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border);
-  color: var(--fg-dim); font-size: 10px; line-height: 1.6;
-}
-.hint code { font-family: var(--font-mono); color: var(--fg-muted); }
+button:hover { opacity: 0.92; }
+button:disabled { opacity: 0.55; cursor: progress; }
+.err { min-height: 18px; margin-top: 12px; color: var(--crit); font-size: 0.75rem; }
+.hint { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--ink-faint); font-size: 0.75rem; line-height: 1.5; }
+.hint code { font-family: var(--font-mono); color: var(--ink-muted); }
 </style>
 </head>
 <body>
 <div class="card">
-  <div class="brand">
-    <span class="brand-mark" aria-hidden="true">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z"/><path d="M9 12l2 2 4-4"/>
-      </svg>
-    </span>
-    <span>
-      <span class="brand-name">SENTINEL</span><br>
-      <span class="brand-sub">Lineage EDR</span>
-    </span>
-  </div>
-  <p class="sub">Authentication required to open the console.</p>
+  <div class="brand"><strong>SENTINEL</strong><span>lineage EDR</span></div>
   <form id="f">
     <label for="u">Username</label>
     <input id="u" name="username" autocomplete="username" autofocus spellcheck="false">
@@ -148,7 +88,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
     <button type="submit" id="submit">Sign in</button>
     <div class="err" id="e" role="alert" aria-live="polite"></div>
   </form>
-  <div class="hint">Credentials are set at install time in<br><code>/etc/sentinel/sentinel.env</code></div>
+  <div class="hint">Credentials are set at install time in <code>/etc/sentinel/sentinel.env</code>.</div>
 </div>
 <script>
 document.getElementById('f').addEventListener('submit', async (ev) => {
@@ -168,9 +108,9 @@ document.getElementById('f').addEventListener('submit', async (ev) => {
     });
     if (r.ok) { location.href = '/'; return; }
     const j = await r.json().catch(() => ({}));
-    e.textContent = j.error || ('sign-in failed: ' + r.status);
+    e.textContent = j.error || ('Sign-in failed (' + r.status + '). Try again.');
   } catch (err) {
-    e.textContent = 'connection error';
+    e.textContent = 'Cannot reach the hub. Check that sentinel-hub is running.';
   } finally {
     btn.disabled = false;
   }
