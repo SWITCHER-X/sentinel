@@ -9,6 +9,8 @@ User=root
 Group=root
 WorkingDirectory=/opt/sentinel
 EnvironmentFile=-/etc/sentinel/sentinel.env
+# Tracepoints attach through tracefs; some minimal/VM installs never mount it.
+ExecStartPre=/bin/sh -c 'test -d /sys/kernel/tracing/events || test -d /sys/kernel/debug/tracing/events || mkdir -p /sys/kernel/tracing 2>/dev/null; test -d /sys/kernel/tracing/events || mount -t tracefs tracefs /sys/kernel/tracing 2>/dev/null || mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null || true'
 ExecStart=/opt/sentinel/.venv/bin/python agent/sentinel_lineage_agent.py
 Restart=always
 RestartSec=5

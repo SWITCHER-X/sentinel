@@ -451,6 +451,27 @@ if command -v systemctl >/dev/null 2>&1; then
     grep -qw bpf /sys/kernel/security/lsm 2>/dev/null \
       || note "WARN: 'bpf' not in the LSM list — LSM hooks will not attach (boot with lsm=...,bpf)"
 
+    # eBPF tracepoints attach through tracefs; minimal installs often skip it.
+    TRACE_READY=0
+    for t in /sys/kernel/tracing /sys/kernel/debug/tracing; do
+      [ -d "$t/events" ] && TRACE_READY=1
+    done
+    if [[ $TRACE_READY -eq 0 ]]; then
+      mkdir -p /sys/kernel/tracing 2>/dev/null || true
+      mount -t tracefs tracefs /sys/kernel/tracing 2>/dev/null \
+        || mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null \
+        || true
+      for t in /sys/kernel/tracing /sys/kernel/debug/tracing; do
+        [ -d "$t/events" ] && TRACE_READY=1
+      done
+    fi
+    if [[ $TRACE_READY -eq 1 ]]; then
+      note "tracefs available (eBPF tracepoints can attach)"
+    else
+      note "WARN: tracefs is not mounted — the loader will report 'not all programs attached'"
+      note "      mount it with: sudo mount -t tracefs tracefs /sys/kernel/tracing"
+    fi
+
     install -m 644 "$SRC_DIR/deploy/sentinel-agent.service" /etc/systemd/system/
     systemctl daemon-reload
     # enabled = it comes back after every reboot without an operator

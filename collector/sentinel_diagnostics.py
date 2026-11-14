@@ -19,6 +19,7 @@ Runner = Callable[[List[str]], tuple]  # (returncode, stdout, stderr)
 
 BTF_PATH = "/sys/kernel/btf/vmlinux"
 LSM_PATH = "/sys/kernel/security/lsm"
+TRACEFS_PATHS = ("/sys/kernel/tracing", "/sys/kernel/debug/tracing")
 
 
 def _default_runner(cmd: List[str], timeout: float = 3.0) -> tuple:
@@ -82,6 +83,10 @@ def _disk_low(path: str) -> Optional[str]:
     return None
 
 
+def _tracefs_ready(paths) -> bool:
+    return any(os.path.isdir(os.path.join(p, "events")) for p in paths)
+
+
 def _lsm_has_bpf(lsm_path: str) -> Optional[bool]:
     try:
         with open(lsm_path, "r", encoding="utf-8", errors="replace") as fh:
@@ -100,6 +105,7 @@ def diagnose(
     env: Optional[Dict[str, Optional[str]]] = None,
     btf_path: str = BTF_PATH,
     lsm_path: str = LSM_PATH,
+    tracefs_paths=TRACEFS_PATHS,
     runner: Optional[Runner] = None,
     kernel_release: Optional[str] = None,
     stale_after: float = 300.0,
@@ -194,6 +200,16 @@ def diagnose(
     else:
         add("kernel.btf", "Kernel exposes BTF", "ok", "CO-RE metadata is available.")
 
+    if _tracefs_ready(tracefs_paths):
+        add("kernel.tracefs", "Trace filesystem is available", "ok",
+            "Tracepoints can attach (tracefs events are present).")
+    else:
+        add("kernel.tracefs", "Trace filesystem is not mounted", "fail",
+            "eBPF tracepoints attach through tracefs; without it the loader reports "
+            "'not all programs attached' and the agent restarts in a loop.",
+            "Mount tracefs and restart the agent.",
+            "sudo mount -t tracefs tracefs /sys/kernel/tracing && sudo systemctl restart sentinel-agent")
+
     lsm = _lsm_has_bpf(lsm_path)
     if lsm is False:
         add("kernel.lsm", "BPF LSM hook is not active", "warn",
@@ -266,6 +282,7 @@ def diagnose(
             "kernel": kernel,
             "btf": os.path.exists(btf_path),
             "lsm_bpf": lsm,
+            "tracefs": _tracefs_ready(tracefs_paths),
             "total_events": total_events,
             "last_event_age": None if not telemetry_last_ts else round(now - telemetry_last_ts, 1),
         },
