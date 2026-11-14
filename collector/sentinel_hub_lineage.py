@@ -459,6 +459,19 @@ def _auth_gate():
     return None
 
 
+TRUST_PROXY = os.environ.get("SENTINEL_TRUST_PROXY", "0") == "1"
+
+
+def _client_ip() -> str:
+    """Real client for lockout/audit. X-Forwarded-For is only honoured when the
+    operator declares a trusted reverse proxy (spoofable otherwise)."""
+    if TRUST_PROXY:
+        forwarded = request.headers.get("X-Forwarded-For", "")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+    return request.remote_addr or "?"
+
+
 @app.route("/login", methods=["GET"])
 def login_page():
     return send_file(os.path.join(COLLECTOR_DIR, "login.html"))
@@ -466,7 +479,7 @@ def login_page():
 
 @app.route("/api/v1/login", methods=["POST"])
 def api_login():
-    ip = request.remote_addr or "?"
+    ip = _client_ip()
     body = request.get_json(silent=True) or {}
     username = (body.get("username") or "").strip()
     password = body.get("password") or ""
