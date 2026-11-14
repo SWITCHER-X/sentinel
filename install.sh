@@ -144,6 +144,38 @@ pkg_install() {
   esac
 }
 
+# ─── Preflight: fail before changing anything ───
+printf '\n[*] Preflight checks\n'
+python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' \
+  || die "Python 3.10+ is required (found: $(python3 -V 2>&1))"
+printf '    ok   Python %s\n' "$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+
+free_kb() { df -Pk "$1" 2>/dev/null | awk 'NR==2 {print $4}'; }
+for d in /opt /var/lib; do
+  avail=$(free_kb "$d" || echo 0)
+  [[ ${avail:-0} -ge 300000 ]] || die "not enough free space in $d ($(( ${avail:-0} / 1024 )) MB free, need ~300 MB)"
+  printf '    ok   free space on %s: %s MB\n' "$d" "$(( avail / 1024 ))"
+done
+
+if command -v ss >/dev/null 2>&1 && ss -ltn "sport = :$PORT" 2>/dev/null | grep -q LISTEN; then
+  OWNER=$(ss -ltnp 2>/dev/null | awk -v p=":$PORT" '$4 ~ p' | head -1)
+  if grep -q sentinel_hub_lineage <<<"$OWNER"; then
+    note "stale sentinel-hub is holding :$PORT — stopping it first"
+    pkill -f sentinel_hub_lineage 2>/dev/null || true
+    sleep 1
+  else
+    die "port $PORT is already in use${OWNER:+ by: $OWNER} — free it or set SENTINEL_PORT"
+  fi
+fi
+printf '    ok   port %s is free\n' "$PORT"
+
+command -v systemctl >/dev/null 2>&1 || note "WARN: no systemd — services will be skipped"
+if [[ $HUB_ONLY -eq 0 ]]; then
+  [[ -f /sys/kernel/btf/vmlinux ]] || note "WARN: no /sys/kernel/btf/vmlinux — the agent will not load (the hub is fine)"
+  grep -qw bpf /sys/kernel/security/lsm 2>/dev/null || note "WARN: 'bpf' is not in the LSM list — LSM hooks will not attach"
+fi
+printf '    ok   preflight complete\n'
+
 # ─── [1/8] System dependencies ───
 step "Installing system dependencies ($PKG)"
 BASE_DEPS=()
@@ -360,9 +392,10 @@ else
 fi
 
 # ─── [8/8] Credentials sync + health check ───
-step "Syncing dashboard credentials and checking the hub"
+step "Syncing credentials and verifying the installation"
 ADMIN_PW_SYNCED=$(grep "^SENTINEL_ADMIN_PASSWORD=" "$GEN_CAT" | head -1 | cut -d= -f2-)
 ADMIN_USER_SYNCED=$(grep "^SENTINEL_ADMIN_USER=" "$GEN_CAT" | head -1 | cut -d= -f2-)
+AGENT_KEY_SYNCED=$(grep "^SENTINEL_AGENT_KEY=" "$GEN_CAT" | head -1 | cut -d= -f2-)
 "$OPT/.venv/bin/python" - <<PYEOF
 import sys
 sys.path.insert(0, "$OPT/collector")
@@ -372,29 +405,75 @@ import sentinel_auth as sa
 sa.ensure_user("$ADMIN_USER_SYNCED", """$ADMIN_PW_SYNCED""", reset=True)
 PYEOF
 
-HUB_OK=0
-for _ in $(seq 1 20); do
-  if curl -sf --max-time 2 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then HUB_OK=1; break; fi
-  sleep 1
-done
+CHECKS_PASS=0; CHECKS_FAIL=0; CHECKS_WARN=0
+pass_chk() { printf '       PASS  %s\n' "$1"; CHECKS_PASS=$((CHECKS_PASS + 1)); }
+fail_chk() { printf '       FAIL  %s\n' "$1"; CHECKS_FAIL=$((CHECKS_FAIL + 1)); }
+warn_chk() { printf '       WARN  %s\n' "$1"; CHECKS_WARN=$((CHECKS_WARN + 1)); }
+run_chk()  { local label=$1; shift; if "$@" >/dev/null 2>&1; then pass_chk "$label"; else fail_chk "$label"; fi; }
+run_warn() { local label=$1; shift; if "$@" >/dev/null 2>&1; then pass_chk "$label"; else warn_chk "$label"; fi; }
 
-if [[ $HUB_OK -eq 1 ]]; then
-  step_ok "hub responding on :$PORT"
+have_file()       { [[ -s "$1" ]]; }
+have_exe()        { [[ -x "$1" ]]; }
+no_placeholders() { ! grep -q '=CHANGE_ME' "$1"; }
+env_perms()       { [[ "$(stat -c %a "$1" 2>/dev/null)" == "600" ]]; }
+py_import()       { "$OPT/.venv/bin/python" -c "import $1"; }
+health_ok()       { curl -sf --max-time 3 -H "X-Sentinel-Key: ${AGENT_KEY_SYNCED:-}" "http://127.0.0.1:$PORT/health" 2>/dev/null | grep -qE '"status":"(ok|healthy)"'; }
+page_ok()         { curl -sf --max-time 3 -o /dev/null "http://127.0.0.1:$PORT/login"; }
+agent_active()    { systemctl is-active --quiet sentinel-agent 2>/dev/null; }
+rules_ok()        { "$OPT/.venv/bin/python" "$OPT/tools/validate_rules.py" "$ETC/rules.yaml" 2>&1 | grep -q "All rules passed"; }
+login_ok() {
+  PORT="$PORT" CHECK_PW="$ADMIN_PW_SYNCED" CHECK_USER="$ADMIN_USER_SYNCED" "$OPT/.venv/bin/python" - <<'PYLOGIN'
+import json, os, urllib.request
+req = urllib.request.Request(
+    "http://127.0.0.1:%s/api/v1/login" % os.environ["PORT"],
+    data=json.dumps({"username": os.environ.get("CHECK_USER", "admin"),
+                     "password": os.environ["CHECK_PW"]}).encode(),
+    headers={"Content-Type": "application/json"})
+try:
+    with urllib.request.urlopen(req, timeout=5) as r:
+        ok = json.load(r).get("ok") is True
+except Exception:
+    ok = False
+raise SystemExit(0 if ok else 1)
+PYLOGIN
+}
+
+# Wait for the hub once (systemd path only); the checks below reuse the result.
+if [[ $SYSTEMD -eq 1 ]]; then
+  for _ in $(seq 1 20); do health_ok && break; sleep 1; done
+fi
+
+printf '       -- verification --\n'
+run_chk  "secrets have no CHANGE_ME placeholders" no_placeholders "$GEN_CAT"
+run_chk  "secret file permissions are 600" env_perms "$GEN_CAT"
+run_chk  "Python env imports flask" py_import flask
+run_chk  "Python env imports yaml" py_import yaml
+run_chk  "Python env imports gunicorn" py_import gunicorn
+run_chk  "rules file validates" rules_ok
+if [[ $SYSTEMD -eq 1 ]]; then
+  run_chk  "hub /health is healthy" health_ok
+  run_chk  "dashboard login page reachable" page_ok
+  run_chk  "admin login with the env password" login_ok
 else
-  note "WARN: hub not responding on :$PORT after 20s — diagnosing"
-  # 1. Is something else holding the port (stale hub from an earlier run)?
+  # No service manager: the operator starts the hub by hand, so don't fail the install.
+  run_warn "hub /health is healthy (start it manually)" health_ok
+  run_warn "dashboard login page reachable (start it manually)" page_ok
+  run_warn "admin login with the env password (start it manually)" login_ok
+fi
+if [[ $HUB_ONLY -eq 0 ]]; then
+  run_chk  "CO-RE object built" have_file "$OPT/build/sentinel_lineage_core.o"
+  run_chk  "libbpf loader built" have_exe "$OPT/build/sentinel-loader"
+  run_warn "sentinel-agent is active" agent_active
+fi
+
+if [[ $CHECKS_FAIL -eq 0 ]]; then
+  step_ok "verification passed (${CHECKS_PASS} passed, ${CHECKS_WARN} warning(s))"
+else
+  note "WARN: ${CHECKS_FAIL} check(s) failed — collecting diagnostics"
   if command -v ss >/dev/null 2>&1; then
     HOLDER=$(ss -ltnp 2>/dev/null | awk -v p=":$PORT" '$4 ~ p {print $0; exit}')
-    if [[ -n "$HOLDER" ]]; then
-      note "port $PORT is already held by: $HOLDER"
-      note "if that is a stale hub, stop it: sudo pkill -f sentinel_hub_lineage && sudo systemctl restart sentinel-hub"
-    fi
+    [[ -n "$HOLDER" ]] && note "port $PORT held by: $HOLDER"
   fi
-  # 2. Placeholder secrets make the hub refuse to boot by design.
-  if grep -q 'CHANGE_ME' "$GEN_CAT" 2>/dev/null; then
-    note "secrets still contain CHANGE_ME placeholders — run: sudo ./install.sh --reset-credentials"
-  fi
-  # 3. Show the unit state and the real error.
   if [[ $SYSTEMD -eq 1 ]]; then
     note "unit state: $(systemctl is-active sentinel-hub 2>/dev/null || true) / $(systemctl is-enabled sentinel-hub 2>/dev/null || true)"
     if command -v journalctl >/dev/null 2>&1; then
@@ -402,7 +481,7 @@ else
       journalctl -u sentinel-hub -n 30 --no-pager 2>/dev/null | sed 's/^/       /'
     fi
   fi
-  step_ok "hub not verified (see diagnostics above)"
+  step_ok "verification failed (${CHECKS_FAIL} failed, ${CHECKS_PASS} passed)"
 fi
 
 # ─── Summary ───
@@ -415,6 +494,7 @@ printf '  Config    : %s\n' "$GEN_CAT"
 printf '  State     : %s\n' "$VARLIB"
 printf '  Logs      : journalctl -u sentinel-hub -f\n'
 if [[ $HUB_ONLY -eq 0 ]]; then printf '  Agent log : journalctl -u sentinel-agent -f\n'; fi
+printf '  Checks    : %s passed, %s failed, %s warning(s)\n' "$CHECKS_PASS" "$CHECKS_FAIL" "$CHECKS_WARN"
 printf '  Uninstall : sudo %s/uninstall.sh\n' "$OPT"
 
 if [[ -n "$ADMIN_PW" ]]; then
@@ -427,3 +507,8 @@ else
   printf '\n  Dashboard password: %s\n' "$GEN_CAT (SENTINEL_ADMIN_PASSWORD)"
 fi
 printf '─────────────────────────────────────────────────────────────\n'
+
+if [[ ${CHECKS_FAIL:-0} -gt 0 ]]; then
+  printf '\n  !! %s verification check(s) failed — see the output above.\n' "$CHECKS_FAIL"
+  exit 1
+fi
