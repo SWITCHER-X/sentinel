@@ -16,12 +16,15 @@ import hmac
 import hashlib
 import urllib.request
 import functools
+import threading
 from collections import defaultdict
 from flask import Flask, request, jsonify, Response, send_file, abort, redirect, make_response
-from flask_cors import CORS
 
 app = Flask(__name__)
 # Dashboard is same-origin, so no CORS: cross-origin pages must not reach this API.
+
+# Limit request body size to 1MB to prevent DoS
+app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024
 
 # ─── Auth + persistence (sentinel_auth) ───
 import sys as _sys
@@ -48,13 +51,15 @@ REQUIRED_SECRETS = [
 for _sec in REQUIRED_SECRETS:
     if not os.getenv(_sec):
         raise RuntimeError(f"Missing required secret: {_sec}")
+    if os.getenv(_sec, "").startswith("CHANGE_ME"):
+        raise RuntimeError(f"Secret {_sec} still has default CHANGE_ME value — please configure it")
 
 AGENT_KEY = os.getenv("SENTINEL_AGENT_KEY")
 _admin_user = os.getenv("SENTINEL_ADMIN_USER", "admin")
 _admin_pw = os.getenv("SENTINEL_ADMIN_PASSWORD")
 sa.ensure_user(_admin_user, _admin_pw)
 
-PUBLIC_PATHS = ("/login", "/health", "/metrics", "/favicon.ico")
+PUBLIC_PATHS = ("/login", "/health", "/favicon.ico")   # /metrics needs auth, see _metrics_ok
 ADMIN_WRITE_PREFIXES = ("/api/v1/rules", "/api/v1/geo", "/api/v1/lineage/")
 OPEN_API = ("/api/v1/stats",)  # monitoring endpoints stay open (read-only counters)
 
@@ -67,6 +72,40 @@ def _is_agent(req):
 def _session_ok(req):
     tok = req.cookies.get("sentinel_session", "")
     return bool(tok) and sa.session_verify(tok)
+
+
+def _metrics_ok(req):
+    """/metrics exposes event, severity and node counts: require a session, the agent key
+    (X-Sentinel-Key), or `Authorization: Bearer <key>` (what Prometheus can send).
+    Set SENTINEL_METRICS_PUBLIC=1 to restore the old open behaviour."""
+    if os.getenv("SENTINEL_METRICS_PUBLIC") == "1":
+        return True
+    auth = req.headers.get("Authorization", "")
+    if AGENT_KEY and auth.startswith("Bearer ") and hmac.compare_digest(
+            auth[7:].encode(), AGENT_KEY.encode()):
+        return True
+    return _is_agent(req) or _session_ok(req)
+
+
+# ─── Rate limiting for agent endpoints ───
+_telemetry_rate_limits: dict[str, list[float]] = {}
+_telemetry_rate_lock = threading.Lock()
+TELEMETRY_MAX_PER_MINUTE = 1000  # per agent key
+
+def _check_telemetry_rate_limit(agent_key: str) -> bool:
+    """Return True if under limit, False if rate limited."""
+    now = time.time()
+    with _telemetry_rate_lock:
+        window_start = now - 60
+        timestamps = _telemetry_rate_limits.get(agent_key, [])
+        # Keep only timestamps within the last minute
+        timestamps = [ts for ts in timestamps if ts > window_start]
+        if len(timestamps) >= TELEMETRY_MAX_PER_MINUTE:
+            return False
+        timestamps.append(now)
+        _telemetry_rate_limits[agent_key] = timestamps
+        return True
+
 
 # ─── Configuration ───
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -362,6 +401,8 @@ def _auth_gate():
         if not (sa.session_verify(tok) and sa.csrf_verify(tok, request.headers.get("X-CSRF-Token", ""))):
             return jsonify({"error": "forbidden"}), 403
         return None
+    if p == "/metrics":
+        return None if _metrics_ok(request) else (jsonify({"error": "unauthorized"}), 401)
     if p in PUBLIC_PATHS or p.startswith(("/login", "/api/v1/login")):
         return None
     if any(p.startswith(o) for o in OPEN_API):
@@ -384,19 +425,24 @@ def login_page():
 @app.route("/api/v1/login", methods=["POST"])
 def api_login():
     ip = request.remote_addr or "?"
-    allowed, retry = sa.login_attempts(ip)
+    body = request.json or {}
+    username = body.get("username", "")
+    
+    # Check both IP and username throttling
+    allowed, retry = sa.login_attempts(ip, username)
     if not allowed:
         return jsonify({"error": f"locked, retry in {retry}s"}), 429
-    body = request.json or {}
-    if sa.check_user(body.get("username", ""), body.get("password", "")):
-        sa.login_reset(ip)
+    
+    if sa.check_user(username, body.get("password", "")):
+        sa.login_reset(ip, username)
         tok = sa.session_create()
-        sa.audit(body.get("username", "?"), "login", f"ip={ip}")
+        sa.audit(username, "login", f"ip={ip}")
         resp = make_response(jsonify({"ok": True, "csrf": sa.csrf_for(tok)}))
         resp.set_cookie("sentinel_session", tok, httponly=True, samesite="Lax",
                         secure=SESSION_COOKIE_SECURE, max_age=12 * 3600)
         return resp
-    sa.login_fail(ip)
+    
+    sa.login_fail(ip, username)
     return jsonify({"error": "invalid credentials"}), 401
 
 
@@ -461,6 +507,11 @@ def telemetry():
         # Require agent authentication for telemetry ingestion
         if not _is_agent(request):
             return jsonify({"error": "unauthorized"}), 401
+
+        # Rate limit per agent key
+        agent_key = request.headers.get("X-Sentinel-Key", "")
+        if not _check_telemetry_rate_limit(agent_key):
+            return jsonify({"error": "rate limited"}), 429
 
         data = request.json or {}
         data["received_at"] = time.time()
@@ -701,7 +752,16 @@ def event_stream():
 # ─── Health Check Endpoint ───
 @app.route("/health")
 def health_check():
-    """Health check endpoint for load balancers and monitoring"""
+    """Health check endpoint for load balancers and monitoring.
+    Unauthenticated minimal check for load balancers. Detailed info requires auth."""
+    # Check if request has auth (agent key or session)
+    has_auth = _is_agent(request) or _session_ok(request)
+    
+    # Minimal response for unauthenticated requests (load balancer probes)
+    if not has_auth:
+        return jsonify({"status": "ok"}), 200
+    
+    # Detailed response for authenticated requests
     checks = STATE.health_check()
     checks.setdefault("checks", {})
 
@@ -734,7 +794,9 @@ def health_check():
 # ─── Metrics Endpoint (Prometheus) ───
 @app.route("/metrics")
 def metrics():
-    """Prometheus metrics endpoint"""
+    """Prometheus metrics endpoint - requires agent key or session"""
+    if not _metrics_ok(request):
+        return jsonify({"error": "unauthorized"}), 401
     st = STATE.get_stats()
     lin = st.get("lineage", {})
     logs = STATE.get_telemetry_logs()
@@ -772,5 +834,9 @@ def metrics():
 if __name__ == "__main__":
     load_lineage_db()
     _port = int(os.getenv("SENTINEL_PORT", "5000"))
-    print(f"[*] Project SENTINEL Hub & SOC Web UI online at http://0.0.0.0:{_port}...")
-    app.run(host="0.0.0.0", port=_port)
+    _host = os.getenv("SENTINEL_BIND", "127.0.0.1")
+    print(f"[*] Project SENTINEL Hub & SOC Web UI online at http://{_host}:{_port}...")
+    if _host not in ("127.0.0.1", "::1", "localhost"):
+        print("[!] Listening beyond localhost with the Flask dev server and no TLS. "
+              "For production use gunicorn behind a TLS proxy (see comments above).")
+    app.run(host=_host, port=_port)

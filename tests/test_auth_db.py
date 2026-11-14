@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 import urllib.request
 from pathlib import Path
@@ -109,12 +110,13 @@ class TestPersistence(unittest.TestCase):
 
     def test_event_persist_and_query(self):
         c = sa.db()
+        seq = time.time_ns() // 1000
         c.execute("INSERT INTO events(seq,ts,type,severity,rule_id,mitre,pid,ppid,"
                   "lineage_id,comm,binary,cmdline,user,host,killed,action,raw) "
-                  "VALUES(1,1,'EXEC_THREAT','CRITICAL','r','[]',1,0,'0x1','nc',"
-                  "'nc','nc -e','root','h',1,'KILL','{}')")
+                  "VALUES(?,1,'EXEC_THREAT','CRITICAL','r','[]',1,0,'0x1','nc',"
+                  "'nc','nc -e','root','h',1,'KILL','{}')", (seq,))
         c.commit()
-        row = c.execute("SELECT * FROM events WHERE seq=1").fetchone()
+        row = c.execute("SELECT * FROM events WHERE seq=?", (seq,)).fetchone()
         self.assertEqual(row["severity"], "CRITICAL")
         c.close()
 
