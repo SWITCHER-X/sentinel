@@ -346,20 +346,36 @@ sa.ensure_user("$ADMIN_USER_SYNCED", """$ADMIN_PW_SYNCED""", reset=True)
 PYEOF
 
 HUB_OK=0
-if [[ $SYSTEMD -eq 1 ]]; then
-  for _ in $(seq 1 15); do
-    if curl -sf --max-time 2 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then HUB_OK=1; break; fi
-    sleep 1
-  done
-else
-  if curl -sf --max-time 2 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then HUB_OK=1; fi
-fi
+for _ in $(seq 1 20); do
+  if curl -sf --max-time 2 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then HUB_OK=1; break; fi
+  sleep 1
+done
 
 if [[ $HUB_OK -eq 1 ]]; then
   step_ok "hub responding on :$PORT"
 else
-  note "WARN: hub not responding on :$PORT — check: journalctl -u sentinel-hub -n 50"
-  step_ok "hub not verified"
+  note "WARN: hub not responding on :$PORT after 20s — diagnosing"
+  # 1. Is something else holding the port (stale hub from an earlier run)?
+  if command -v ss >/dev/null 2>&1; then
+    HOLDER=$(ss -ltnp 2>/dev/null | awk -v p=":$PORT" '$4 ~ p {print $0; exit}')
+    if [[ -n "$HOLDER" ]]; then
+      note "port $PORT is already held by: $HOLDER"
+      note "if that is a stale hub, stop it: sudo pkill -f sentinel_hub_lineage && sudo systemctl restart sentinel-hub"
+    fi
+  fi
+  # 2. Placeholder secrets make the hub refuse to boot by design.
+  if grep -q 'CHANGE_ME' "$GEN_CAT" 2>/dev/null; then
+    note "secrets still contain CHANGE_ME placeholders — run: sudo ./install.sh --reset-credentials"
+  fi
+  # 3. Show the unit state and the real error.
+  if [[ $SYSTEMD -eq 1 ]]; then
+    note "unit state: $(systemctl is-active sentinel-hub 2>/dev/null || true) / $(systemctl is-enabled sentinel-hub 2>/dev/null || true)"
+    if command -v journalctl >/dev/null 2>&1; then
+      printf '       -- last sentinel-hub log lines --\n'
+      journalctl -u sentinel-hub -n 30 --no-pager 2>/dev/null | sed 's/^/       /'
+    fi
+  fi
+  step_ok "hub not verified (see diagnostics above)"
 fi
 
 # ─── Summary ───
