@@ -152,3 +152,46 @@ def test_signature_failure_aborts_update(monkeypatch):
     except subprocess.CalledProcessError:
         return
     raise AssertionError("unsigned commit must not pass verification")
+
+
+def test_verify_defaults_to_fail_closed():
+    """An unset switch must mean 'require signatures', not 'skip them'."""
+    import os
+    import subprocess
+
+    env = {k: v for k, v in os.environ.items() if k != "SENTINEL_UPDATE_VERIFY"}
+    tools = Path(__file__).resolve().parent.parent / "tools"
+    code = (
+        "import sys;"
+        f"sys.path.insert(0, {str(tools)!r});"
+        "import self_update;"
+        "print(self_update.VERIFY)"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                         text=True, env=env, timeout=30).stdout.strip()
+    assert out == "True"
+
+
+def test_unsigned_update_aborts_before_build(tmp_path, monkeypatch):
+    """A failed signature must stop the pipeline before anything is built."""
+    import subprocess
+
+    builds = []
+    monkeypatch.setattr(su, "load_env_file", lambda *a, **k: None)
+    monkeypatch.setattr(su, "VARLIB", tmp_path)
+    monkeypatch.setattr(su, "LOCK_FILE", tmp_path / "update.lock")
+    monkeypatch.setattr(su, "STAGING", tmp_path / "staging")
+    monkeypatch.setattr(su, "read_meta", lambda *a, **k: {"commit": "old"})
+    monkeypatch.setattr(su, "report", lambda *a, **k: None)
+    monkeypatch.setattr(su, "status", lambda *a, **k: None)
+    monkeypatch.setattr(su, "stop_staged", lambda *a, **k: None)
+    monkeypatch.setattr(su, "fetch", lambda: "deadbeef")
+
+    def reject(commit):
+        raise subprocess.CalledProcessError(1, ["git", "verify-commit", commit])
+
+    monkeypatch.setattr(su, "verify_signature", reject)
+    monkeypatch.setattr(su, "build", lambda: builds.append("build"))
+
+    assert su.main(["--force"]) == 1
+    assert builds == [], "nothing may be built for an unverified commit"

@@ -403,9 +403,34 @@ add_secret "SENTINEL_AGENT_KEY"      "$(openssl rand -hex 32 2>/dev/null || head
 add_secret "SENTINEL_SESSION_SECRET" "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p -c 64)"
 add_secret "SENTINEL_ALLOWLIST_KEY"  "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p -c 64)"
 add_secret "SENTINEL_DB_PATH"        "$VARLIB/sentinel.db"
-UPDATE_BRANCH=$(git -C "$SRC_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo master)
-[[ "$UPDATE_BRANCH" == "HEAD" ]] && UPDATE_BRANCH=master
-add_secret "SENTINEL_UPDATE_REF"      "$UPDATE_BRANCH"
+# Pin updates to a tag when installing from one; otherwise say out loud that
+# branch installs are unverified so production never gets a silent trust gap.
+UPDATE_TAG=$(git -C "$SRC_DIR" describe --tags --exact-match 2>/dev/null || true)
+if [[ -n "$UPDATE_TAG" ]]; then
+  add_secret "SENTINEL_UPDATE_REF"    "$UPDATE_TAG"
+  add_secret "SENTINEL_UPDATE_VERIFY" "1"
+  note "updates pinned to signed tag $UPDATE_TAG (signature required)"
+else
+  UPDATE_BRANCH=$(git -C "$SRC_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo master)
+  [[ "$UPDATE_BRANCH" == "HEAD" ]] && UPDATE_BRANCH=master
+  add_secret "SENTINEL_UPDATE_REF"    "$UPDATE_BRANCH"
+  add_secret "SENTINEL_UPDATE_VERIFY" "0"
+  note "WARN: installed from branch '$UPDATE_BRANCH' — updates are UNVERIFIED."
+  note "      Install from a signed tag for a production trust chain."
+fi
+
+# Release-signing trust anchor: verify-tag/verify-commit needs the public key.
+SIGNING_PUB="$SRC_DIR/docs/signing-key.pub"
+if [[ -f "$SIGNING_PUB" ]] && command -v ssh-keygen >/dev/null 2>&1; then
+  install -d -m 755 /etc/sentinel
+  { printf '* '; tr -d '\n' < "$SIGNING_PUB"; printf '\n'; } > /etc/sentinel/allowed_signers
+  chmod 644 /etc/sentinel/allowed_signers
+  if command -v git >/dev/null 2>&1; then
+    git config --system gpg.ssh.allowedSignersFile /etc/sentinel/allowed_signers 2>/dev/null || true
+    git config --system gpg.format ssh 2>/dev/null || true
+  fi
+  note "release signing key installed (allowed_signers)"
+fi
 
 # Never leave a placeholder behind: the hub refuses to boot on one.
 if grep -q '=CHANGE_ME' "$GEN_CAT"; then

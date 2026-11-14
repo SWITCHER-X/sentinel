@@ -65,18 +65,26 @@ it when the hub is directly exposed: a client could then spoof its address.
 
 ## Self-update trust
 
-By default the updater fetches `SENTINEL_UPDATE_REF` (a branch after install).
-That means push access to the branch equals root on every sibling install.
+The updater fetches `SENTINEL_UPDATE_REF`. `SENTINEL_UPDATE_VERIFY` defaults to
+`1`: the fetched ref must carry a valid signature (`git verify-tag` /
+`git verify-commit`) or the update aborts before building. The installer writes
+the release key to `/etc/sentinel/allowed_signers` (from
+`docs/signing-key.pub`, fingerprint
+`SHA256:5wCBDa/K3kXd1qsYl6CT/YXcmw6jorMjwOgOOZUO5YU`) and points git at it.
+
+Installing from a branch sets verification off and prints a warning: that
+install has no trust chain. If you cannot sign tags yet, disable the dashboard
+trigger by removing `/etc/sudoers.d/sentinel-update`.
 
 Recommended production posture:
 
-1. Pin the ref to a release tag:
-   `SENTINEL_UPDATE_REF=v1.0.0-alpha`
-2. Enable verification: `SENTINEL_UPDATE_VERIFY=1` — the updater runs
-   `git verify-tag` / `git verify-commit` on the resolved commit and aborts on a
-   missing/invalid signature before building anything.
-3. Keep the signing key off the host; use the same key the tag was signed with
-   (`git tag -v` locally before pushing).
+1. Keep `SENTINEL_UPDATE_REF` pinned to a release tag (`v1.0.0-alpha`).
+2. Keep `SENTINEL_UPDATE_VERIFY=1` — the updater runs `git verify-tag` /
+   `git verify-commit` on the resolved commit and aborts on a missing/invalid
+   signature before building anything.
+3. Compare the key fingerprint out of band, and rotate the release key to an
+   offline machine before GA: the alpha key was generated on the maintainer's
+   build host.
 
 If you cannot sign tags yet, disable the dashboard trigger by removing
 `/etc/sudoers.d/sentinel-update` so only a human with root can update.

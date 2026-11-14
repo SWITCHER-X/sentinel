@@ -7,7 +7,7 @@ back through its process lineage, and can kill a whole tree when a rule fires.
 No cloud account. No agent binary to trust. One install, one host, one console.
 
 ```
-status: alpha · tests: 117 passing · platform: Linux (x86_64/arm64) · license: see LICENSE
+status: alpha · tests: 119 passing · platform: Linux (x86_64/arm64) · license: see LICENSE
 ```
 
 ---
@@ -249,6 +249,29 @@ Manual: `git pull && sudo ./install.sh`. The updater ref is
 [docs/SECURITY.md](docs/SECURITY.md)).
 </details>
 
+## Verified releases
+
+`v1.0.0-alpha` is signed with SSH. The public key ships in
+[docs/signing-key.pub](docs/signing-key.pub):
+
+```
+SHA256:5wCBDa/K3kXd1qsYl6CT/YXcmw6jorMjwOgOOZUO5YU
+```
+
+- `install.sh` writes `/etc/sentinel/allowed_signers` and points git at it
+  (`gpg.ssh.allowedSignersFile`).
+- With `SENTINEL_UPDATE_VERIFY=1` (the default) the updater runs
+  `git verify-tag`/`git verify-commit` and **aborts before building** an
+  unsigned ref.
+- Installing from a branch prints an explicit warning and sets verification off
+  so updates keep working — but that install has no trust chain. Install from
+  the tag for production.
+- Compare the fingerprint above out of band (this README, the repo release
+  notes) before trusting a download.
+
+The signing key was generated on the maintainer's build host; rotate it to an
+offline key before a GA release.
+
 ## Security model
 
 <details>
@@ -317,7 +340,7 @@ Manual: `git pull && sudo ./install.sh`. The updater ref is
 ## Development
 
 ```bash
-python3 -m pytest tests -q          # 117 tests
+python3 -m pytest tests -q          # 119 tests
 python3 tools/validate_rules.py     # rules schema + regex safety
 node --check collector/dashboard.js # console module
 bash -n install.sh
@@ -326,6 +349,17 @@ bash -n install.sh
 Design decisions for the console live in [DESIGN.md](DESIGN.md); product context
 in [PRODUCT.md](PRODUCT.md); operations and security notes in
 [docs/OPERATIONS.md](docs/OPERATIONS.md) and [docs/SECURITY.md](docs/SECURITY.md).
+
+## Tested on
+
+| Platform | Kernel | Sensor | Enforcement |
+|---|---|---|---|
+| Ubuntu 24.04.5 (QEMU, TCG) | 6.8.0-147-generic, BTF | verifier loads all programs (`no lsm=bpf` in that guest) | not exercised there |
+| Arch Linux (x86_64) | rolling, BTF, BPF LSM | attaches once tracefs is mounted | run `tools/verify_enforcement.py` |
+
+Enforcement kills are verified by `tools/verify_enforcement.py`; add your own
+distro/kernel row when you run it. A failure on one distro is expected alpha
+behavior — better listed than discovered.
 
 ## Status
 
