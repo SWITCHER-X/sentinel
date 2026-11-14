@@ -53,19 +53,19 @@ case "$PKG" in
   apt)
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
-    apt-get install -y -qq python3 python3-venv python3-pip rsync curl >/dev/null
+    apt-get install -y -qq python3 python3-venv python3-pip rsync curl openssl >/dev/null
     if [[ $HUB_ONLY -eq 0 ]]; then
       apt-get install -y -qq clang llvm libbpf-dev libelf-dev gcc make >/dev/null 2>&1 \
         || echo "[!] eBPF build toolchain not installed — the agent will not build. Install: clang llvm libbpf-dev libelf-dev gcc make"
     fi
     ;;
   dnf|yum)
-    $PKG install -y -q python3 python3-pip rsync curl git >/dev/null
+    $PKG install -y -q python3 python3-pip rsync curl git openssl >/dev/null
     [[ $HUB_ONLY -eq 0 ]] && $PKG install -y -q clang llvm libbpf-devel libelf-devel gcc make >/dev/null 2>&1 || true
     ;;
   pacman)
     for attempt in 1 2 3; do
-      pacman -Sy --noconfirm --needed python python-pip rsync curl >/dev/null && break
+      pacman -Sy --noconfirm --needed python python-pip rsync curl openssl >/dev/null && break
       echo "[!] pacman mirror timeout (attempt $attempt/3) — retrying in 5s…"
       sleep 5
     done
@@ -76,9 +76,31 @@ case "$PKG" in
     ;;
 esac
 
+# ─── Verify the build toolchain (fail early with an actionable message) ───
+if [[ $HUB_ONLY -eq 0 ]]; then
+  MISSING=""
+  for bin in clang gcc make; do
+    command -v "$bin" >/dev/null 2>&1 || MISSING="$MISSING $bin"
+  done
+  BPF_HDR=""
+  for d in /usr/include/bpf /usr/local/include/bpf /usr/include/"$(uname -m)"-linux-gnu/bpf; do
+    [[ -f "$d/bpf_helpers.h" ]] && BPF_HDR="$d" && break
+  done
+  if [[ -n "$MISSING" || -z "$BPF_HDR" ]]; then
+    echo "[-] Missing eBPF build prerequisites:${MISSING:-} ${BPF_HDR:+}"
+    [[ -z "$BPF_HDR" ]] && echo "    libbpf headers not found (need <include>/bpf/bpf_helpers.h)"
+    echo "    Debian/Ubuntu: sudo apt install clang llvm libbpf-dev libelf-dev gcc make"
+    echo "    Fedora/RHEL:   sudo dnf install clang llvm libbpf-devel libelf-devel gcc make"
+    echo "    Arch:          sudo pacman -S clang llvm libbpf gcc make"
+    echo "    Or install the hub only: sudo ./install.sh --hub-only"
+    exit 1
+  fi
+fi
+
 # ─── Service user ───
 if ! id sentinel >/dev/null 2>&1; then
-  useradd --system --home-dir "$VARLIB" --shell /usr/sbin/nologin sentinel
+  NOLOGIN_BIN=$(command -v nologin || echo /usr/sbin/nologin)
+  useradd --system --home-dir "$VARLIB" --shell "$NOLOGIN_BIN" sentinel
   echo "[✓] Created system user: sentinel"
 fi
 
@@ -111,6 +133,9 @@ if [[ $HUB_ONLY -eq 0 ]]; then
   echo "[*] Building CO-RE eBPF object and libbpf loader…"
   if ( cd "$OPT" && make build-core build-loader ); then
     chown -R sentinel:sentinel "$OPT/build"
+    for f in "$OPT/build/sentinel_lineage_core.o" "$OPT/build/sentinel-loader"; do
+      [[ -s "$f" ]] || { echo "[-] build did not produce $f" >&2; exit 1; }
+    done
     echo "[✓] Built build/sentinel_lineage_core.o and build/sentinel-loader"
   else
     echo "[-] eBPF build failed (need clang, libbpf headers and gcc)." >&2
@@ -177,19 +202,31 @@ fi
 chown root:sentinel "$ETC"/*.env 2>/dev/null || true
 
 # ─── systemd units ───
-echo "[*] Installing systemd services…"
-install -m 644 "$SRC_DIR/deploy/sentinel-hub.service" /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable --now sentinel-hub
-
-if [[ $HUB_ONLY -eq 0 ]]; then
-  install -m 644 "$SRC_DIR/deploy/sentinel-agent.service" /etc/systemd/system/
+if ! command -v systemctl >/dev/null 2>&1; then
+  echo "[!] systemd not available — skipping services. Start manually:"
+  echo "    $OPT/.venv/bin/python $OPT/collector/sentinel_hub_lineage.py"
+  [[ $HUB_ONLY -eq 0 ]] && echo "    sudo $OPT/.venv/bin/python $OPT/agent/sentinel_lineage_agent.py"
+else
+  echo "[*] Installing systemd services…"
+  install -m 644 "$SRC_DIR/deploy/sentinel-hub.service" /etc/systemd/system/
   systemctl daemon-reload
-  systemctl enable sentinel-agent 2>/dev/null || true
-  # Agent needs the hub up first; start it, but don't fail install on a headless/VM kernel
-  systemctl start sentinel-agent 2>/dev/null \
-    && echo "[✓] eBPF agent started" \
-    || echo "[!] Agent did not start (no BPF support in this kernel?) — hub is still fully functional"
+  systemctl enable --now sentinel-hub
+
+  if [[ $HUB_ONLY -eq 0 ]]; then
+    # Kernel prerequisites: warn, don't fail — the hub is still useful.
+    [[ -f /sys/kernel/btf/vmlinux ]] \
+      || echo "[!] No /sys/kernel/btf/vmlinux — the CO-RE object cannot load (need CONFIG_DEBUG_INFO_BTF=y)."
+    grep -qw bpf /sys/kernel/security/lsm 2>/dev/null \
+      || echo "[!] 'bpf' is not in the LSM list — LSM hooks will not attach. Boot with lsm=...,bpf."
+
+    install -m 644 "$SRC_DIR/deploy/sentinel-agent.service" /etc/systemd/system/
+    systemctl daemon-reload
+    systemctl enable sentinel-agent 2>/dev/null || true
+    # Agent needs the hub up first; start it, but don't fail install on a headless/VM kernel
+    systemctl start sentinel-agent 2>/dev/null \
+      && echo "[✓] eBPF agent started" \
+      || echo "[!] Agent did not start (no BPF support in this kernel?) — hub is still fully functional"
+  fi
 fi
 
 # ─── Sync dashboard credentials: env file is the source of truth ───

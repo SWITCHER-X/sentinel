@@ -148,9 +148,9 @@ sudo ./install.sh              # hub + eBPF agent
 sudo ./install.sh --hub-only   # dashboard and collector only
 ```
 
-The installer detects apt, dnf/yum or pacman, creates a `sentinel` system user, installs to `/opt/sentinel`, keeps state in `/var/lib/sentinel` and configuration in `/etc/sentinel`, generates secrets, and enables the systemd services. The dashboard password is printed once.
+The installer detects apt, dnf/yum or pacman, verifies the eBPF build toolchain, **builds the CO-RE object and `sentinel-loader`**, creates a `sentinel` system user, installs to `/opt/sentinel`, keeps state in `/var/lib/sentinel` and configuration in `/etc/sentinel`, generates secrets, and enables the systemd services. The dashboard password is printed once. On a kernel without BTF or BPF LSM the hub still installs; the agent logs why it cannot attach.
 
-Open `http://<host>:5000/` and sign in as `admin`.
+Open `http://127.0.0.1:5000/` and sign in as `admin`. The hub binds to loopback by default — set `SENTINEL_BIND=0.0.0.0` in `/etc/sentinel/sentinel.env` to expose it, and put TLS in front (the agent key is a plain header).
 
 To rotate the dashboard password: `sudo ./install.sh --reset-credentials`.
 
