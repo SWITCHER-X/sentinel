@@ -6,6 +6,7 @@ class SentinelDashboard {
     this.state = {
       theme: 'dark',
       density: 'comfortable',
+      viewMode: 'normal',
       sidebarCollapsed: false,
       currentFilter: 'ALL',
       activeFilters: new Set(['ALL']),
@@ -171,6 +172,8 @@ class SentinelDashboard {
     try {
       this.state.density = localStorage.getItem('sentinel-density') || 'comfortable';
       this.state.sidebarCollapsed = localStorage.getItem('sentinel-sidebar') === '1';
+      this.state.viewMode = localStorage.getItem('sentinel-view-mode') === 'investigation'
+        ? 'investigation' : 'normal';
     } catch (e) {}
     this.applyTheme();
   }
@@ -194,6 +197,42 @@ class SentinelDashboard {
     try { localStorage.setItem('sentinel-density', this.state.density); } catch (e) {}
     this.layoutTimeline();
     this.showToast(`Density: ${this.state.density}`, 'info');
+  }
+
+  setViewMode(mode, silent = false) {
+    const inv = mode === 'investigation';
+    this.state.viewMode = inv ? 'investigation' : 'normal';
+    try { localStorage.setItem('sentinel-view-mode', this.state.viewMode); } catch (e) {}
+
+    document.body.classList.toggle('mode-investigation', inv);
+    if (!inv && this.state.detailOpen) this.closeLineageDetail();
+
+    const metrics = this.$('#mini-metrics');
+    if (metrics) metrics.classList.toggle('hidden', !inv);
+
+    const graph = this.$('#graph-panel');
+    if (graph) {
+      const wasHidden = graph.classList.contains('hidden');
+      graph.classList.toggle('hidden', !inv);
+      if (inv && wasHidden) requestAnimationFrame(() => this.renderGraph());
+    }
+
+    const btn = this.$('#view-mode-toggle');
+    if (btn) {
+      btn.textContent = inv ? 'INVESTIGATE' : 'NORMAL';
+      btn.className = `badge ${inv ? 'badge-med' : 'badge-dim'} mono cursor-pointer`;
+      btn.setAttribute('aria-pressed', inv ? 'true' : 'false');
+      btn.title = inv
+        ? 'Investigation mode: full event detail, metrics and lineage graph. Click for normal view (I).'
+        : 'Normal mode: calm feed. Click for investigation mode (I).';
+    }
+
+    this.renderTimeline();
+    if (!silent) this.showToast(inv ? 'Investigation mode' : 'Normal mode', 'info');
+  }
+
+  toggleViewMode() {
+    this.setViewMode(this.state.viewMode === 'investigation' ? 'normal' : 'investigation');
   }
 
   toggleMetrics() {
@@ -627,6 +666,8 @@ class SentinelDashboard {
     const sev = (log.severity || 'INFO').toUpperCase();
     const killed = !!(log.killed || log.action === 'KILL' ||
       (log.type === 'EXEC_THREAT' && log.killed !== false && sev === 'CRITICAL'));
+    const investigation = this.state.viewMode === 'investigation';
+
     const row = this.el('div', {
       class: 'timeline-row virtual-item flex items-center gap-3 px-3 cursor-default select-none',
       role: 'option',
@@ -638,12 +679,16 @@ class SentinelDashboard {
         borderBottom: '1px solid var(--border)',
         fontSize: 'var(--fs-sm)'
       },
-      onclick: () => { this.selectTimelineIndex(index); if (log.lineage_id != null) this.focusLineage(log.lineage_id); },
+      onclick: () => {
+        this.selectTimelineIndex(index);
+        if (log.lineage_id != null) {
+          this.focusLineage(log.lineage_id);
+          if (investigation) this.openLineageDetail(log.lineage_id);
+        }
+      },
       ondblclick: () => { if (log.lineage_id != null) this.openLineageDetail(log.lineage_id); }
     });
 
-    // Keep the row quiet: time, severity, process, one line of context. Everything
-    // else (rule, pid, lineage, host, argv) lives in the detail drawer.
     const time = this.el('span', { class: 'mono shrink-0 w-[64px]', text: this.fmt.time(log.received_at || log.ts), style: { color: 'var(--fg-muted)' } });
     const dot = this.el('span', { class: 'shrink-0 w-2 h-2 rounded-full', style: { background: this.SEVERITY_VAR[sev] || 'var(--fg-dim)' }, title: sev });
     const comm = this.el('span', { class: 'mono shrink-0 max-w-[160px] truncate font-medium', text: log.comm || log.filename || '—', title: log.comm || '' });
@@ -653,8 +698,36 @@ class SentinelDashboard {
       style: { color: 'var(--fg-dim)' },
       title: log.cmdline || log.binary || ''
     });
-    row.append(time, dot, comm, summary);
-    if (killed) row.appendChild(this.el('span', { class: 'badge badge-crit shrink-0', text: 'KILL' }));
+
+    if (!investigation) {
+      // Normal mode: time, severity, process, one line of context.
+      row.append(time, dot, comm, summary);
+      if (killed) row.appendChild(this.el('span', { class: 'badge badge-crit shrink-0', text: 'KILL' }));
+      return row;
+    }
+
+    // Investigation mode: full forensic trail on the row.
+    const action = killed ? this.ACTION_BADGE.KILL
+      : this.EXFIL_TYPES.has(log.type) ? this.ACTION_BADGE.EXFIL
+      : log.type === 'GEO_BLOCK' ? this.ACTION_BADGE.GEO_BLOCK
+      : sev === 'HIGH' || sev === 'CRITICAL' ? this.ACTION_BADGE.BLOCK
+      : this.ACTION_BADGE.LOG;
+    const type = this.el('span', { class: `badge badge-${this.TYPE_BADGE[log.type] || 'dim'} shrink-0`, text: log.type || 'EVENT' });
+    const actionB = this.el('span', { class: `badge ${action.cls} shrink-0`, text: action.text });
+    const rule = this.el('span', { class: 'mono shrink-0 max-w-[140px] truncate', text: log.rule_id || log.rule_name || '—', style: { color: 'var(--accent)' }, title: log.rule_id || '' });
+    const mitre = (log.mitre && log.mitre.length)
+      ? this.el('span', { class: 'flex gap-1 shrink-0' }, log.mitre.slice(0, 3).map(m => this.el('span', { class: 'tag tag-mitre mono', text: m, title: 'MITRE ' + m })))
+      : this.el('span', { class: 'shrink-0 w-1' });
+    const pid = this.el('span', { class: 'mono shrink-0 w-[52px]', text: log.pid != null ? String(log.pid) : '—', style: { color: 'var(--fg-muted)' } });
+    const lineage = this.el('span', {
+      class: 'mono shrink-0 w-[92px] truncate cursor-pointer hover:underline',
+      text: this.fmt.shortLineage(log.lineage_id),
+      style: { color: 'var(--med)' },
+      title: this.fmt.lineage(log.lineage_id),
+      onclick: (e) => { e.stopPropagation(); if (log.lineage_id != null) this.focusLineage(log.lineage_id); }
+    });
+    const host = this.el('span', { class: 'mono shrink-0 max-w-[80px] truncate', text: log.host || '—', style: { color: 'var(--fg-muted)' }, title: log.host || '' });
+    row.append(time, dot, type, actionB, rule, mitre, pid, lineage, comm, host, summary);
     return row;
   }
 
@@ -1288,6 +1361,8 @@ class SentinelDashboard {
       { group: 'Actions', label: 'Toggle density', keywords: 'density compact comfortable', action: () => this.toggleDensity() },
       { group: 'Actions', label: 'Refresh all data', keywords: 'refresh reload', action: () => this.refreshAll() },
       { group: 'Actions', label: 'Clear feed', keywords: 'clear feed', action: () => this.clearFeed() },
+      { group: 'View', label: 'Normal mode (calm view)', keywords: 'normal calm simple view mode', action: () => this.setViewMode('normal') },
+      { group: 'View', label: 'Investigation mode (full detail)', keywords: 'investigation investigate deep debug view mode', action: () => this.setViewMode('investigation') },
       { group: 'View', label: 'Toggle metrics strip', keywords: 'metrics kpi charts', action: () => this.toggleMetrics() },
       { group: 'View', label: 'Toggle lineage graph', keywords: 'graph trees visualization', action: () => this.toggleGraph() },
       { group: 'View', label: 'Toggle lineage sidebar', keywords: 'sidebar lineages list', action: () => this.toggleSidebar() },
@@ -1512,6 +1587,7 @@ class SentinelDashboard {
     if (e.ctrlKey && e.key.toLowerCase() === 't') { e.preventDefault(); this.toggleTheme(); return; }
     if (e.ctrlKey && e.key.toLowerCase() === 'b') { e.preventDefault(); this.toggleSidebar(); return; }
     if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'd') { e.preventDefault(); this.toggleDensity(); return; }
+    if (!e.ctrlKey && !e.metaKey && !inInput && e.key.toLowerCase() === 'i') { e.preventDefault(); this.toggleViewMode(); return; }
 
     if (inInput) {
       if (e.key === 'Escape') e.target.blur();
@@ -1591,6 +1667,7 @@ class SentinelDashboard {
     this.els.themeToggle?.addEventListener('click', () => this.toggleTheme());
     this.$('#mode-badge')?.addEventListener('click', () => this.toggleMode());
     this.$('#sidebar-toggle')?.addEventListener('click', () => this.toggleSidebar());
+    this.$('#view-mode-toggle')?.addEventListener('click', () => this.toggleViewMode());
     this.$('#density-toggle')?.addEventListener('click', () => this.toggleDensity());
     this.$('#act-update')?.addEventListener('click', () => this.startUpdate());
     this.els.paletteTrigger?.addEventListener('click', () => this.openCommandPalette());
@@ -1675,6 +1752,7 @@ class SentinelDashboard {
     this.renderFilterChips();
     this.bindEvents();
     this.initSession();
+    this.setViewMode(this.state.viewMode, true);
     this.pollUpdate(false);
     this.layoutTimeline();
     this.startPolling();

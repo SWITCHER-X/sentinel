@@ -265,6 +265,8 @@ button.badge:hover { filter: brightness(1.18); }
   background: var(--bg-sunken); border: 1px solid var(--border);
 }
 .conn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--fg-dim); box-shadow: 0 0 0 3px rgba(255,255,255,0.03); }
+body.mode-investigation .brand-mark { border-color: var(--accent); }
+body.mode-investigation .timeline-row { background: transparent; }
 
 /* ─── KPI strip ─────────────────────────────────────────────────────────── */
 .kpi-strip {
@@ -585,6 +587,7 @@ button.badge:hover { filter: brightness(1.18); }
       <span>OFFLINE</span>
     </span>
     <button id="mode-badge" class="badge badge-ok mono cursor-pointer" title="Kill-switch state. Click to toggle learn/enforce.">ENFORCING</button>
+    <button id="view-mode-toggle" class="badge badge-dim mono cursor-pointer" aria-pressed="false" title="Normal mode: calm feed. Click for investigation mode (I).">NORMAL</button>
     <button id="theme-toggle" data-theme-toggle class="icon-btn" aria-label="Toggle theme" title="Toggle theme (Ctrl+T)">
       <svg id="icon-sun" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="hidden"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
       <svg id="icon-moon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>

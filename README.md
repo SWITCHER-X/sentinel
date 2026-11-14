@@ -336,6 +336,19 @@ All `/api/v1/*` routes require a dashboard session or the agent key, except wher
 
 ---
 
+## Dashboard views
+
+The console has two views, toggled from the header pill, the `I` key, or the
+command palette:
+
+| View | What is shown |
+|---|---|
+| **Normal** (default) | calm feed: time, severity, process, one line of context. Metrics, graph and per-event detail stay out of the way. |
+| **Investigation** | full forensic row (type, action, rule, MITRE, pid, lineage, host, argv), metrics strip and lineage graph; clicking an event opens the detail drawer. |
+
+The choice is remembered in `localStorage` (`sentinel-view-mode`). Individual
+panels can still be toggled from the palette's *View* group.
+
 ## CLI
 
 ```bash
