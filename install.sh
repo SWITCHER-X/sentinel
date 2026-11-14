@@ -363,6 +363,11 @@ set_secret() {  # key value — replace the line, whatever it currently holds
   rm -f "$tmp"
 }
 
+gen_password() {
+  # 32 hex chars: auto-generated, no quoting hazards, comfortably > the 12-char floor
+  openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n'
+}
+
 add_secret() {  # key value — set when missing OR still a CHANGE_ME placeholder
   local key=$1 val=$2 cur=""
   cur=$(grep -m1 "^${key}=" "$GEN_CAT" 2>/dev/null | cut -d= -f2- || true)
@@ -374,17 +379,18 @@ add_secret() {  # key value — set when missing OR still a CHANGE_ME placeholde
 ADMIN_PW=""
 if [[ $EXISTING_INSTALL -eq 1 && $RESET_CREDS -eq 0 ]]; then
   CUR_PW=$(grep -m1 '^SENTINEL_ADMIN_PASSWORD=' "$GEN_CAT" 2>/dev/null | cut -d= -f2- || true)
-  if [[ -z "$CUR_PW" || "$CUR_PW" == CHANGE_ME* ]]; then
-    # Older installs copied the placeholder and never replaced it.
-    ADMIN_PW=$(openssl rand -base64 18 2>/dev/null || head -c 24 /dev/urandom | base64)
+  if [[ -z "$CUR_PW" || "$CUR_PW" == CHANGE_ME* || ${#CUR_PW} -lt 12 ]]; then
+    # Older installs copied the placeholder, or a legacy password is below the
+    # 12-char floor — either way the hub would refuse to boot, so regenerate.
+    ADMIN_PW=$(gen_password)
     set_secret "SENTINEL_ADMIN_PASSWORD" "$ADMIN_PW"
-    note "placeholder dashboard password replaced — printed below"
+    note "dashboard password auto-generated — printed below"
   else
     note "existing installation detected — credentials preserved"
   fi
   add_secret "SENTINEL_ADMIN_USER" "admin"
 else
-  ADMIN_PW=$(openssl rand -base64 18 2>/dev/null || head -c 24 /dev/urandom | base64)
+  ADMIN_PW=$(gen_password)
   add_secret "SENTINEL_ADMIN_USER" "admin"
   if [[ $RESET_CREDS -eq 1 && $EXISTING_INSTALL -eq 1 ]]; then
     set_secret "SENTINEL_ADMIN_PASSWORD" "$ADMIN_PW"
@@ -481,6 +487,11 @@ run_warn() { local label=$1; shift; if "$@" >/dev/null 2>&1; then pass_chk "$lab
 have_file()       { [[ -s "$1" ]]; }
 have_exe()        { [[ -x "$1" ]]; }
 no_placeholders() { ! grep -q '=CHANGE_ME' "$1"; }
+admin_pw_ok() {
+  local pw
+  pw=$(grep -m1 '^SENTINEL_ADMIN_PASSWORD=' "$GEN_CAT" 2>/dev/null | cut -d= -f2- || true)
+  [[ -n "$pw" && "$pw" != CHANGE_ME* && ${#pw} -ge 12 ]]
+}
 env_perms()       { [[ "$(stat -c %a "$1" 2>/dev/null)" == "600" ]]; }
 py_import()       { "$OPT/.venv/bin/python" -c "import $1"; }
 health_ok()       { curl -sf --max-time 3 -H "X-Sentinel-Key: ${AGENT_KEY_SYNCED:-}" "http://127.0.0.1:$PORT/health" 2>/dev/null | grep -qE '"status":"(ok|healthy)"'; }
@@ -514,6 +525,7 @@ fi
 
 printf '       -- verification --\n'
 run_chk  "secrets have no CHANGE_ME placeholders" no_placeholders "$GEN_CAT"
+run_chk  "admin password auto-generated (>=12 chars)" admin_pw_ok
 run_chk  "secret file permissions are 600" env_perms "$GEN_CAT"
 run_chk  "state dir and auth DB owned by sentinel" state_owned
 run_warn "dashboard self-update wired" update_ready
