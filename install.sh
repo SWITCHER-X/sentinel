@@ -26,11 +26,38 @@ STEP_T0=$INSTALL_START
 step() {
   STEP=$((STEP + 1))
   STEP_T0=$(date +%s)
-  printf '\n[%d/%d] %s\n' "$STEP" "$TOTAL" "$*"
+  local pct=$(( STEP * 100 / TOTAL ))
+  local filled=$(( STEP * 20 / TOTAL ))
+  local bar empty
+  bar=$(printf '%*s' "$filled" '' | tr ' ' '#')
+  empty=$(printf '%*s' "$(( 20 - filled ))" '')
+  printf '\n[%s%s] %2d/%d (%3d%%) %s\n' "$bar" "$empty" "$STEP" "$TOTAL" "$pct" "$*"
 }
 note() { printf '       ..  %s\n' "$*"; }
 step_ok() { printf '       ok  %s (%ss)\n' "${1:-done}" "$(( $(date +%s) - STEP_T0 ))"; }
 die() { printf '       !!  %s\n' "$*" >&2; exit 1; }
+
+# Live elapsed ticker for silent steps (build, venv creation).
+SPIN_PID=""
+SPIN_T0=0
+spinner_start() {
+  [[ ${PROGRESS:-0} -eq 1 ]] || return 0
+  SPIN_T0=$(date +%s)
+  ( while :; do
+      printf '\r       ..  %s (%ss)' "${1:-working}" "$(( $(date +%s) - SPIN_T0 ))"
+      sleep 1
+    done ) &
+  SPIN_PID=$!
+}
+spinner_stop() {
+  if [[ -n "${SPIN_PID:-}" ]]; then
+    kill "$SPIN_PID" 2>/dev/null || true
+    wait "$SPIN_PID" 2>/dev/null || true
+    SPIN_PID=""
+    printf '\r\033[K'
+  fi
+}
+trap 'spinner_stop' EXIT
 
 usage() {
   sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
@@ -62,6 +89,13 @@ printf '    source : %s\n' "$SRC_DIR"
 printf '    target : %s  (state: %s, config: %s)\n' "$OPT" "$VARLIB" "$ETC"
 [[ $HUB_ONLY -eq 1 ]] && printf '    mode   : hub only (no eBPF agent)\n'
 
+# Live download progress (pacman/apt/pip/rsync bars + speeds) when we have a TTY.
+# In CI/logs it stays quiet so the output remains readable.
+PROGRESS=0
+[[ -t 1 ]] && PROGRESS=1
+[[ $PROGRESS -eq 1 ]] && printf '    progress: live download bars enabled\n'
+
+
 # ─── Source preflight (fail before touching the system) ───
 REQUIRED_SRC=(Makefile requirements.txt collector/sentinel_hub_lineage.py collector/sentinel_auth.py)
 if [[ $HUB_ONLY -eq 0 ]]; then
@@ -78,23 +112,28 @@ for pm in apt-get dnf yum pacman zypper; do
 done
 [[ -n "$PKG" ]] || die "unknown package manager — install python3, python3-venv, pip, rsync, curl manually"
 
+# Run a command with output suppressed unless the terminal is showing progress.
+_run_pkg() {
+  if [[ $PROGRESS -eq 1 ]]; then "$@"; else "$@" >/dev/null 2>&1; fi
+}
+
 apt_install() {
   export DEBIAN_FRONTEND=noninteractive
-  apt-get install -y -qq --no-install-recommends "$@" >/dev/null
+  _run_pkg apt-get install -y --no-install-recommends "$@"
 }
 pacman_install() {
   local pkgs=("$@") i
-  pacman -S --needed --noconfirm "${pkgs[@]}" >/dev/null 2>&1 && return 0
+  _run_pkg pacman -S --needed --noconfirm "${pkgs[@]}" && return 0
   for i in 1 2 3; do
     note "pacman mirror timeout (attempt $i/3) — refreshing package db"
     pacman -Sy --noconfirm >/dev/null 2>&1 || true
     sleep 3
-    pacman -S --needed --noconfirm "${pkgs[@]}" >/dev/null 2>&1 && return 0
+    _run_pkg pacman -S --needed --noconfirm "${pkgs[@]}" && return 0
   done
   return 1
 }
-dnf_install() { "$PKG" install -y -q "$@" >/dev/null; }
-zypper_install() { zypper --non-interactive install --no-recommends "$@" >/dev/null; }
+dnf_install() { _run_pkg "$PKG" install -y "$@"; }
+zypper_install() { _run_pkg zypper --non-interactive install --no-recommends "$@"; }
 
 pkg_install() {
   case "$PKG" in
@@ -109,7 +148,9 @@ pkg_install() {
 step "Installing system dependencies ($PKG)"
 BASE_DEPS=()
 case "$PKG" in
-  apt-get) apt-get update -qq; BASE_DEPS=(python3 python3-venv python3-pip rsync curl openssl) ;;
+  apt-get)
+    if [[ $PROGRESS -eq 1 ]]; then apt-get update -q; else apt-get update -qq; fi
+    BASE_DEPS=(python3 python3-venv python3-pip rsync curl openssl) ;;
   pacman)  BASE_DEPS=(python python-pip rsync curl openssl) ;;
   dnf|yum) BASE_DEPS=(python3 python3-pip rsync curl openssl git) ;;
   zypper)  BASE_DEPS=(python3 python3-pip python3-venv rsync curl openssl) ;;
@@ -163,10 +204,11 @@ step_ok "directories ready"
 
 # ─── [3/8] Application files ───
 step "Copying application to $OPT"
-rsync -a --delete \
-  --exclude '.venv' --exclude 'build' --exclude 'dist' --exclude '__pycache__' \
-  --exclude '*.pyc' --exclude 'lineage_db.json' --exclude '.git' \
-  "$SRC_DIR"/ "$OPT"/
+RSYNC_OPTS=(-a --delete
+  --exclude '.venv' --exclude 'build' --exclude 'dist' --exclude '__pycache__'
+  --exclude '*.pyc' --exclude 'lineage_db.json' --exclude '.git')
+if [[ $PROGRESS -eq 1 ]]; then RSYNC_OPTS+=(--info=progress2 --human-readable); fi
+rsync "${RSYNC_OPTS[@]}" "$SRC_DIR"/ "$OPT"/
 chown -R sentinel:sentinel "$OPT"
 chmod 750 "$OPT"
 step_ok "source copied"
@@ -178,13 +220,17 @@ if [[ -x "$OPT/.venv/bin/python" ]]; then
   note "reusing existing virtualenv"
 else
   note "creating virtualenv"
+  spinner_start "creating virtualenv"
   python3 -m venv "$OPT/.venv"
+  spinner_stop
 fi
 [[ -x "$OPT/.venv/bin/pip" ]] || "$OPT/.venv/bin/python" -m ensurepip --upgrade >/dev/null 2>&1 || true
 note "installing requirements (this is the slowest step; cached wheels make re-runs fast)"
-if ! "$OPT/.venv/bin/pip" install --quiet --no-input -r "$OPT/requirements.txt"; then
+PIP_FLAGS=(--no-input)
+if [[ $PROGRESS -eq 1 ]]; then PIP_FLAGS+=(--progress-bar on); else PIP_FLAGS+=(--quiet); fi
+if ! "$OPT/.venv/bin/pip" install "${PIP_FLAGS[@]}" -r "$OPT/requirements.txt"; then
   note "requirements.txt failed — falling back to explicit package list"
-  "$OPT/.venv/bin/pip" install --quiet --no-input flask pyyaml requests psutil geoip2 gunicorn
+  "$OPT/.venv/bin/pip" install "${PIP_FLAGS[@]}" flask pyyaml requests psutil geoip2 gunicorn
 fi
 chown -R sentinel:sentinel "$OPT/.venv"
 step_ok "Python deps installed"
@@ -197,13 +243,16 @@ if [[ $HUB_ONLY -eq 1 ]]; then
 else
   MAKE=(make)
   if command -v ccache >/dev/null 2>&1; then MAKE=(make CLANG="ccache clang"); fi
+  spinner_start "compiling eBPF (clang) and loader (gcc)"
   if ( cd "$OPT" && "${MAKE[@]}" build-core build-loader >/tmp/sentinel-build.log 2>&1 ); then
+    spinner_stop
     for f in "$OPT/build/sentinel_lineage_core.o" "$OPT/build/sentinel-loader"; do
       [[ -s "$f" ]] || { cat /tmp/sentinel-build.log >&2; die "build did not produce $f"; }
     done
     chown -R sentinel:sentinel "$OPT/build"
     step_ok "built sentinel_lineage_core.o + sentinel-loader"
   else
+    spinner_stop
     cat /tmp/sentinel-build.log >&2
     die "eBPF build failed — re-run with --hub-only to install just the dashboard"
   fi
