@@ -566,6 +566,107 @@ class SentinelDashboard {
     return this.state.selectedHost === 'all' || !log.host || log.host === this.state.selectedHost;
   }
 
+  // ─── Troubleshooter ───
+  // Runs the hub's read-only diagnosis of the ingest path and renders it where
+  // the empty feed is, so the operator sees the cause and the fix, not a shrug.
+  maybeRunDiagnostics() {
+    if (this._diagBusy) return;
+    if (Date.now() - (this._diagLast || 0) < 20000) return;
+    this.runDiagnostics(false);
+  }
+
+  async runDiagnostics(announce = false) {
+    const box = this.$('#diagnostics');
+    if (!box || this._diagBusy) return;
+    this._diagBusy = true;
+    box.innerHTML = '';
+    box.appendChild(this.el('div', { class: 'diag-loading', text: 'Checking the ingest path…' }));
+    try {
+      const res = await fetch('/api/v1/diagnostics', { credentials: 'same-origin' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      this._diagLast = Date.now();
+      this.renderDiagnostics(data);
+      if (announce) {
+        const tone = data.verdict === 'ok' ? 'success' : data.verdict === 'warn' ? 'warning' : 'error';
+        this.showToast(`Diagnostics: ${data.verdict}`, tone);
+      }
+    } catch (e) {
+      box.innerHTML = '';
+      box.appendChild(this.el('div', { class: 'diag-error', text: `Could not run diagnostics (${e.message}).` }));
+    } finally {
+      this._diagBusy = false;
+    }
+  }
+
+  renderDiagnostics(d) {
+    const box = this.$('#diagnostics');
+    if (!box) return;
+    box.innerHTML = '';
+
+    const glyph = d.verdict === 'ok' ? '✓' : d.verdict === 'warn' ? '!' : '×';
+    box.appendChild(this.el('div', { class: `diag-head is-${d.verdict}` }, [
+      this.el('span', { class: 'diag-mark', text: glyph, 'aria-hidden': 'true' }),
+      this.el('div', {}, [
+        this.el('div', { class: 'diag-title', text: d.title }),
+        this.el('p', { class: 'diag-summary', text: d.summary })
+      ])
+    ]));
+
+    const actions = this.el('div', { class: 'diag-actions' });
+    if (d.command) actions.appendChild(this.copyButton(d.command, 'Copy fix'));
+    actions.appendChild(this.el('button', { class: 'diag-btn', text: 'Re-run checks', onclick: () => this.runDiagnostics(true) }));
+    box.appendChild(actions);
+
+    const list = this.el('div', { class: 'diag-list', role: 'list' });
+    for (const c of d.checks) {
+      const row = this.el('div', { class: `diag-item is-${c.status}`, role: 'listitem' }, [
+        this.el('span', { class: 'diag-glyph', text: c.status === 'ok' ? '✓' : c.status === 'warn' ? '!' : '×', 'aria-hidden': 'true' }),
+        this.el('div', { class: 'diag-body' }, [
+          this.el('div', { class: 'diag-row' }, [
+            this.el('span', { class: 'diag-check', text: c.title }),
+            c.command ? this.copyButton(c.command, 'Copy', true) : null
+          ]),
+          this.el('p', { class: 'diag-detail', text: c.detail }),
+          c.fix ? this.el('p', { class: 'diag-fix', text: c.fix }) : null
+        ])
+      ]);
+      list.appendChild(row);
+    }
+    box.appendChild(list);
+
+    const ctx = d.context || {};
+    const bits = [
+      `kernel ${ctx.kernel || '?'}`,
+      ctx.btf ? 'BTF present' : 'no BTF',
+      ctx.lsm_bpf === true ? 'BPF LSM active' : (ctx.lsm_bpf === false ? 'no BPF LSM' : 'LSM unknown'),
+      `${ctx.total_events ?? 0} events stored`
+    ];
+    box.appendChild(this.el('div', { class: 'diag-context', text: bits.join(' · ') }));
+  }
+
+  copyButton(text, label, small = false) {
+    return this.el('button', {
+      class: 'diag-btn' + (small ? ' is-small' : ''),
+      text: label,
+      title: text,
+      onclick: (ev) => {
+        ev.stopPropagation();
+        const done = () => this.showToast('Copied to clipboard', 'success');
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(done).catch(() => this.showToast('Copy failed', 'error'));
+        } else {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          try { document.execCommand('copy'); done(); } catch (e) { this.showToast('Copy failed', 'error'); }
+          ta.remove();
+        }
+      }
+    });
+  }
+
   setFilter(id) {
     if (id === 'ALL') {
       this.state.activeFilters = new Set(['ALL']);
@@ -622,6 +723,7 @@ class SentinelDashboard {
         if (msg) msg.textContent = `No events matching filter: ${this.state.currentFilter}`;
         empty.classList.remove('hidden');
         empty.classList.add('flex');
+        this.maybeRunDiagnostics();
       } else {
         empty.classList.add('hidden');
         empty.classList.remove('flex');
@@ -1330,6 +1432,7 @@ class SentinelDashboard {
       { group: 'Actions', label: 'Export visible events (JSON)', keywords: 'export json download', action: () => this.exportJSON() },
       { group: 'Actions', label: 'Block all threat lineages', keywords: 'block kill all threats', action: () => this.blockAllThreats() },
       { group: 'Actions', label: 'Toggle theme', keywords: 'theme dark light', action: () => this.toggleTheme() },
+      { group: 'Actions', label: 'Run troubleshooting diagnostics', keywords: 'diagnose troubleshoot why empty no data agent pipeline', action: () => this.runDiagnostics(true) },
       { group: 'Actions', label: 'Refresh all data', keywords: 'refresh reload', action: () => this.refreshAll() },
       { group: 'Actions', label: 'Clear feed', keywords: 'clear feed', action: () => this.clearFeed() },
       { group: 'View', label: 'Normal mode (calm view)', keywords: 'normal calm simple view mode', action: () => this.setViewMode('normal') },
