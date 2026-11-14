@@ -173,7 +173,7 @@ struct {
 // Ring buffers
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 256 * 1024);
+    __uint(max_entries, 1024 * 1024);   // exec is the event we can least afford to lose
 } exec_events SEC(".maps");
 
 struct {
@@ -190,6 +190,24 @@ struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 64 * 1024);
 } alert_events SEC(".maps");
+
+// Ring buffer drop counters (per CPU). Read with: bpftool map dump name ringbuf_drops
+enum { DROP_EXEC, DROP_CONN, DROP_FILE, DROP_ALERT, DROP_MAX };
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, DROP_MAX);
+    __type(key, u32);
+    __type(value, u64);
+} ringbuf_drops SEC(".maps");
+
+static __always_inline void count_drop(u32 which) {
+    u64 *v = bpf_map_lookup_elem(&ringbuf_drops, &which);
+    if (v) (*v)++;
+}
+
+#define RB_OUT(map, data, len, which) \
+    do { if (bpf_ringbuf_output(&(map), (data), (len), 0)) count_drop(which); } while (0)
 
 // Rule entry matching userspace structure
 struct rule_entry_t {
@@ -238,6 +256,14 @@ static __always_inline struct scratch_t *get_scratch(void) {
     return bpf_map_lookup_elem(&scratch, &zero);
 }
 
+// Exec attempts waiting for sys_exit_execve to say whether they succeeded (key: tgid).
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 8192);
+    __type(key, u32);
+    __type(value, struct lineage_entry_t);
+} pending_exec SEC(".maps");
+
 // Hash function for lineage_id generation
 static __always_inline u64 lineage_hash(u64 parent_id, const char *path, u32 uid, u64 ts) {
     u64 h = parent_id ^ LINEAGE_ID_SEED;
@@ -269,10 +295,23 @@ static __always_inline int is_lineage_blocked(u64 lineage_id) {
     return lineage_id != 0 && bpf_map_lookup_elem(&blocked_lineages, &lineage_id) != NULL;
 }
 
+// Lineage of whoever launched this process: its own entry (copied at fork, or left by an
+// earlier exec), else the parent's entry. Using the process's own entry first keeps the chain
+// intact across fork-without-exec intermediates and when the parent has exited (re-parenting).
+static __always_inline struct lineage_entry_t *launcher_entry(u32 pid, u32 ppid) {
+    struct lineage_entry_t *e = bpf_map_lookup_elem(&lineage_map, &pid);
+    return e ? e : bpf_map_lookup_elem(&lineage_map, &ppid);
+}
+
 static __always_inline u32 get_ns_pid(struct task_struct *task) {
-    struct pid_namespace *ns = BPF_CORE_READ(task, nsproxy, pid_ns_for_children);
-    if (!ns) return 0;
-    return BPF_CORE_READ(task, tgid);
+    // PID as seen from inside the task's own PID namespace (equals the host PID on the host).
+    struct pid *tp = BPF_CORE_READ(task, group_leader, thread_pid);
+    if (!tp) return 0;
+    unsigned int lvl = BPF_CORE_READ(tp, level);
+    if (lvl > 31) return 0;
+    u32 nr = 0;
+    bpf_core_read(&nr, sizeof(nr), &tp->numbers[lvl].nr);
+    return nr;
 }
 
 // Join argv[0..MAX_ARGS) with spaces into out (NUL-terminated, CMDLINE_LEN bytes).
@@ -318,7 +357,7 @@ static __always_inline void emit_blocked_alert(struct scratch_t *s, u64 lineage_
     bpf_probe_read_kernel_str(a->binary_path, MAX_PATH_LEN, s->entry.binary_path);
     set_tag(a->matched_pattern, tag);
     a->timestamp = ts;
-    bpf_ringbuf_output(&alert_events, a, sizeof(*a), 0);
+    RB_OUT(alert_events, a, sizeof(*a), DROP_ALERT);
 }
 
 // Shared by execve and execveat: create the lineage entry, enforce blocks, emit the event.
@@ -336,7 +375,7 @@ static __always_inline int handle_exec(const char *filename, const char *const *
     u32 ppid = BPF_CORE_READ(task, real_parent, tgid);
     u32 ns_pid = get_ns_pid(task);
 
-    struct lineage_entry_t *parent_ptr = bpf_map_lookup_elem(&lineage_map, &ppid);
+    struct lineage_entry_t *parent_ptr = launcher_entry(pid, ppid);
     u64 parent_lineage_id = parent_ptr ? parent_ptr->lineage_id : 0;
 
     struct lineage_entry_t *e = &s->entry;
@@ -376,20 +415,9 @@ static __always_inline int handle_exec(const char *filename, const char *const *
     e->rule_matched = 0;
     bpf_get_current_comm(&e->comm, sizeof(e->comm));
 
-    bpf_map_update_elem(&lineage_map, &pid, e, BPF_ANY);
-    bpf_map_update_elem(&lineage_by_id, &lineage_id, e, BPF_ANY);
-
-    struct proc_event_t *pe = &s->pe;
-    pe->pid = pid;
-    pe->ppid = ppid;
-    pe->uid = uid;
-    pe->ns_pid = ns_pid;
-    pe->lineage_id = lineage_id;
-    pe->parent_lineage_id = parent_lineage_id;
-    bpf_get_current_comm(&pe->comm, sizeof(pe->comm));
-    bpf_probe_read_kernel_str(pe->filename, MAX_PATH_LEN, e->binary_path);
-    bpf_probe_read_kernel_str(pe->cmdline, CMDLINE_LEN, e->cmdline);
-    bpf_ringbuf_output(&exec_events, pe, sizeof(*pe), 0);
+    // Do not publish yet: the exec may still fail. sys_exit_execve commits it on success.
+    // The pre-exec entry stays in lineage_map until then, so a failed exec changes nothing.
+    bpf_map_update_elem(&pending_exec, &pid, e, BPF_ANY);
     return 0;
 }
 
@@ -410,13 +438,13 @@ SEC("lsm/bprm_check_security")
 int BPF_PROG(bprm_check_security_lsm, struct linux_binprm *bprm) {
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
     u32 ppid = BPF_CORE_READ(task, real_parent, tgid);
-    struct lineage_entry_t *parent = bpf_map_lookup_elem(&lineage_map, &ppid);
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
+    struct lineage_entry_t *parent = launcher_entry(pid, ppid);
     if (!parent || !is_lineage_blocked(parent->lineage_id))
         return 0;
 
     struct scratch_t *s = get_scratch();
     if (!s) return -EPERM;
-    u32 pid = bpf_get_current_pid_tgid() >> 32;
     bpf_probe_read_kernel_str(s->entry.binary_path, MAX_PATH_LEN, BPF_CORE_READ(bprm, filename));
     emit_blocked_alert(s, parent->lineage_id, pid, pid, bpf_ktime_get_ns(), "BLOCKED_LINEAGE_LSM", 20);
     return -EPERM;
@@ -424,12 +452,14 @@ int BPF_PROG(bprm_check_security_lsm, struct linux_binprm *bprm) {
 
 SEC("lsm/task_kill")
 int BPF_PROG(task_kill_lsm, struct task_struct *p, struct kernel_siginfo *info, int sig, const struct cred *cred) {
+    if (sig == 0) return 0;   // kill(pid, 0) is only an existence probe
     u32 pid = BPF_CORE_READ(p, tgid);
     struct lineage_entry_t *entry = bpf_map_lookup_elem(&lineage_map, &pid);
     if (!entry) return 0;
 
     if (entry->flags & LINEAGE_FLAG_TRUSTED) {
         u32 sender_pid = bpf_get_current_pid_tgid() >> 32;
+        if (sender_pid == pid || sender_pid == 1) return 0;   // self, or init/systemd stopping a service
         struct lineage_entry_t *sender = bpf_map_lookup_elem(&lineage_map, &sender_pid);
         if (!sender || !(sender->flags & LINEAGE_FLAG_TRUSTED))
             return -EPERM;
@@ -457,7 +487,7 @@ int BPF_PROG(file_open_lsm, struct file *file) {
     f->flags = BPF_CORE_READ(file, f_flags);
     bpf_get_current_comm(&f->comm, sizeof(f->comm));
     fill_file_path(f->path, file);
-    bpf_ringbuf_output(&file_events, f, sizeof(*f), 0);
+    RB_OUT(file_events, f, sizeof(*f), DROP_FILE);
     return 0;
 }
 
@@ -483,7 +513,7 @@ int trace_connect(struct trace_event_raw_sys_enter *ctx) {
     bpf_probe_read_user(&c->daddr, sizeof(c->daddr), &addr->sin_addr.s_addr);
     bpf_probe_read_user(&c->dport, sizeof(c->dport), &addr->sin_port);
     c->family = family;
-    bpf_ringbuf_output(&conn_events, c, sizeof(*c), 0);
+    RB_OUT(conn_events, c, sizeof(*c), DROP_CONN);
     return 0;
 }
 
@@ -502,25 +532,71 @@ int trace_openat(struct trace_event_raw_sys_enter *ctx) {
     f->flags = ctx->args[2];
     bpf_get_current_comm(&f->comm, sizeof(f->comm));
     bpf_probe_read_user_str(f->path, MAX_PATH_LEN, (const char *)ctx->args[1]);
-    bpf_ringbuf_output(&file_events, f, sizeof(*f), 0);
+    RB_OUT(file_events, f, sizeof(*f), DROP_FILE);
     return 0;
 }
 
+// Commit a pending exec only if it succeeded. Doing this at exit (not at sys_enter) means
+// failed execve() calls (every PATH miss) no longer create phantom events or lineage entries,
+// and comm is the NEW program's name instead of the pre-exec one.
 SEC("tracepoint/syscalls/sys_exit_execve")
 int trace_exit_execve(struct trace_event_raw_sys_exit *ctx) {
-    if (ctx->ret < 0) {
-        u32 pid = bpf_get_current_pid_tgid() >> 32;
-        bpf_map_delete_elem(&lineage_map, &pid);
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
+    struct lineage_entry_t *e = bpf_map_lookup_elem(&pending_exec, &pid);
+    if (!e) return 0;
+    struct scratch_t *s = get_scratch();
+    if (ctx->ret < 0 || !s) {
+        bpf_map_delete_elem(&pending_exec, &pid);
+        return 0;
+    }
+
+    bpf_get_current_comm(&e->comm, sizeof(e->comm));
+    bpf_map_update_elem(&lineage_map, &pid, e, BPF_ANY);
+    bpf_map_update_elem(&lineage_by_id, &e->lineage_id, e, BPF_ANY);
+
+    struct proc_event_t *pe = &s->pe;
+    pe->pid = e->pid;
+    pe->ppid = e->ppid;
+    pe->uid = e->uid;
+    pe->ns_pid = e->ns_pid;
+    pe->lineage_id = e->lineage_id;
+    pe->parent_lineage_id = e->parent_lineage_id;
+    bpf_probe_read_kernel_str(pe->comm, sizeof(pe->comm), e->comm);
+    bpf_probe_read_kernel_str(pe->filename, MAX_PATH_LEN, e->binary_path);
+    bpf_probe_read_kernel_str(pe->cmdline, CMDLINE_LEN, e->cmdline);
+    RB_OUT(exec_events, pe, sizeof(*pe), DROP_EXEC);
+    bpf_map_delete_elem(&pending_exec, &pid);
+    return 0;
+}
+
+// A new process inherits its parent's lineage at fork. Without this, a process that forks and
+// never execs breaks the chain, and a blocked lineage escapes with a double fork or by
+// outliving its parent.
+SEC("tp_btf/sched_process_fork")
+int BPF_PROG(on_fork, struct task_struct *parent, struct task_struct *child) {
+    u32 ctgid = BPF_CORE_READ(child, tgid);
+    if (ctgid != BPF_CORE_READ(child, pid)) return 0;   // new thread, not a new process
+    u32 ptgid = BPF_CORE_READ(parent, tgid);
+    struct lineage_entry_t *pe = bpf_map_lookup_elem(&lineage_map, &ptgid);
+    if (!pe) return 0;
+    if (bpf_map_update_elem(&lineage_map, &ctgid, pe, BPF_ANY) != 0) return 0;
+    struct lineage_entry_t *ce = bpf_map_lookup_elem(&lineage_map, &ctgid);
+    if (ce) {
+        ce->pid = ctgid;
+        ce->ppid = ptgid;
     }
     return 0;
 }
 
+// Drop the entry when the last thread of a process exits, so a recycled PID cannot inherit a
+// dead process's lineage or TRUSTED flag. lineage_by_id keeps the history.
 SEC("tracepoint/sched/sched_process_exit")
 int trace_sched_exit(struct trace_event_raw_sched_process_template *ctx) {
-    u32 pid = ctx->pid;
-    struct lineage_entry_t *entry = bpf_map_lookup_elem(&lineage_map, &pid);
-    if (entry)
-        entry->flags |= LINEAGE_FLAG_KILLED;
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    if (BPF_CORE_READ(task, signal, live.counter) > 0) return 0;   // other threads still running
+    u32 tgid = bpf_get_current_pid_tgid() >> 32;
+    bpf_map_delete_elem(&lineage_map, &tgid);
+    bpf_map_delete_elem(&pending_exec, &tgid);
     return 0;
 }
 
@@ -558,7 +634,7 @@ int BPF_PROG(bpf_lsm, int cmd, union bpf_attr *attr, unsigned int size) {
     struct scratch_t *s = get_scratch();
     if (!s) return 0;
     emit_simple_alert(s, entry, pid, 0xFFFFFFFE, cmd == 5 ? "BPF_PROG_LOAD" : "BPF_MAP_CREATE");
-    bpf_ringbuf_output(&alert_events, &s->alert, sizeof(s->alert), 0);
+    RB_OUT(alert_events, &s->alert, sizeof(s->alert), DROP_ALERT);
     return 0;
 }
 
@@ -571,7 +647,7 @@ int BPF_PROG(kernel_module_request_lsm, char *kmod_name) {
     if (!s) return 0;
     emit_simple_alert(s, entry, pid, 0xFFFFFFFD, "KERNEL_MODULE_LOAD");
     bpf_probe_read_kernel_str(s->alert.binary_path, MAX_PATH_LEN, kmod_name);
-    bpf_ringbuf_output(&alert_events, &s->alert, sizeof(s->alert), 0);
+    RB_OUT(alert_events, &s->alert, sizeof(s->alert), DROP_ALERT);
     return 0;
 }
 
@@ -585,7 +661,7 @@ int BPF_PROG(kernel_read_file_lsm, struct file *file, enum kernel_read_file_id i
     if (!s) return 0;
     emit_simple_alert(s, entry, pid, 0xFFFFFFFD, "MODULE_READ_FILE");
     fill_file_path(s->alert.binary_path, file);
-    bpf_ringbuf_output(&alert_events, &s->alert, sizeof(s->alert), 0);
+    RB_OUT(alert_events, &s->alert, sizeof(s->alert), DROP_ALERT);
     return 0;
 }
 
