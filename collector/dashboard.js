@@ -1240,6 +1240,7 @@ class SentinelDashboard {
   // ─── Command palette ───
   openCommandPalette() {
     this.state.paletteOpen = true;
+    this._focusBeforePalette = document.activeElement;
     const p = this.els.palette;
     if (!p) return;
     p.classList.remove('hidden');
@@ -1252,6 +1253,9 @@ class SentinelDashboard {
     this.state.paletteOpen = false;
     this.state.paletteIndex = -1;
     this.els.palette?.classList.add('hidden');
+    const back = this._focusBeforePalette;
+    this._focusBeforePalette = null;
+    if (back && typeof back.focus === 'function') { try { back.focus(); } catch (e) {} }
   }
 
   buildPaletteIndex() {
@@ -1350,9 +1354,11 @@ class SentinelDashboard {
   async openLineageDetail(lineageId) {
     this.state.detailOpen = true;
     this.state.detailLineageId = lineageId;
+    this._focusBeforeDetail = document.activeElement;
     const panel = this.els.detail;
     if (!panel) return;
     panel.classList.remove('hidden');
+    this.$('#detail-close')?.focus();
     const idEl = this.$('#detail-lineage-id');
     if (idEl) idEl.textContent = this.fmt.shortLineage(lineageId);
     const content = this.els.detailContent;
@@ -1372,6 +1378,21 @@ class SentinelDashboard {
     this.state.detailOpen = false;
     this.state.detailLineageId = null;
     this.els.detail?.classList.add('hidden');
+    const back = this._focusBeforeDetail;
+    this._focusBeforeDetail = null;
+    if (back && typeof back.focus === 'function') { try { back.focus(); } catch (e) {} }
+  }
+
+  // Keep Tab inside an open modal surface (palette / detail drawer).
+  trapTab(e, container) {
+    if (!container) return;
+    const sel = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+    const items = Array.from(container.querySelectorAll(sel)).filter((el) => el.offsetParent !== null);
+    if (!items.length) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
   }
 
   renderLineageDetail(tree) {
@@ -1474,7 +1495,13 @@ class SentinelDashboard {
       if (e.key === 'ArrowDown') { e.preventDefault(); this.movePaletteSelection(1); return; }
       if (e.key === 'ArrowUp') { e.preventDefault(); this.movePaletteSelection(-1); return; }
       if (e.key === 'Enter') { e.preventDefault(); this.executePaletteSelection(); return; }
+      if (e.key === 'Tab') { this.trapTab(e, this.els.palette); return; }
       return;
+    }
+
+    if (this.state.detailOpen) {
+      if (e.key === 'Escape') { e.preventDefault(); this.closeLineageDetail(); return; }
+      if (e.key === 'Tab') { this.trapTab(e, this.els.detail); return; }
     }
 
     if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'k') { e.preventDefault(); this.openCommandPalette(); return; }
@@ -1559,6 +1586,8 @@ class SentinelDashboard {
   bindEvents() {
     this.els.themeToggle?.addEventListener('click', () => this.toggleTheme());
     this.$('#mode-badge')?.addEventListener('click', () => this.toggleMode());
+    this.$('#sidebar-toggle')?.addEventListener('click', () => this.toggleSidebar());
+    this.$('#density-toggle')?.addEventListener('click', () => this.toggleDensity());
     this.$('#act-update')?.addEventListener('click', () => this.startUpdate());
     this.els.paletteTrigger?.addEventListener('click', () => this.openCommandPalette());
     this.els.detailClose?.addEventListener('click', () => this.closeLineageDetail());
