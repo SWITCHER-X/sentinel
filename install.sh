@@ -277,8 +277,21 @@ else
   note "keeping existing $GEN_CAT"
 fi
 
-add_secret() {  # key value — only if absent
-  grep -q "^$1=" "$GEN_CAT" || echo "$1=$2" >> "$GEN_CAT"
+set_secret() {  # key value — replace the line, whatever it currently holds
+  local key=$1 val=$2 tmp
+  tmp=$(mktemp)
+  grep -v "^${key}=" "$GEN_CAT" > "$tmp" 2>/dev/null || true
+  printf '%s=%s\n' "$key" "$val" >> "$tmp"
+  cat "$tmp" > "$GEN_CAT"
+  rm -f "$tmp"
+}
+
+add_secret() {  # key value — set when missing OR still a CHANGE_ME placeholder
+  local key=$1 val=$2 cur=""
+  cur=$(grep -m1 "^${key}=" "$GEN_CAT" 2>/dev/null | cut -d= -f2- || true)
+  if [[ -z "$cur" || "$cur" == CHANGE_ME* ]]; then
+    set_secret "$key" "$val"
+  fi
 }
 
 ADMIN_PW=""
@@ -288,7 +301,7 @@ else
   ADMIN_PW=$(openssl rand -base64 18 2>/dev/null || head -c 24 /dev/urandom | base64)
   add_secret "SENTINEL_ADMIN_USER" "admin"
   if [[ $RESET_CREDS -eq 1 && $EXISTING_INSTALL -eq 1 ]]; then
-    sed -i "s#^SENTINEL_ADMIN_PASSWORD=.*#SENTINEL_ADMIN_PASSWORD=$ADMIN_PW#" "$GEN_CAT"
+    set_secret "SENTINEL_ADMIN_PASSWORD" "$ADMIN_PW"
   else
     add_secret "SENTINEL_ADMIN_PASSWORD" "$ADMIN_PW"
   fi
@@ -298,6 +311,11 @@ add_secret "SENTINEL_AGENT_KEY"      "$(openssl rand -hex 32 2>/dev/null || head
 add_secret "SENTINEL_SESSION_SECRET" "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p -c 64)"
 add_secret "SENTINEL_ALLOWLIST_KEY"  "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p -c 64)"
 add_secret "SENTINEL_DB_PATH"        "$VARLIB/sentinel.db"
+
+# Never leave a placeholder behind: the hub refuses to boot on one.
+if grep -q '=CHANGE_ME' "$GEN_CAT"; then
+  die "$GEN_CAT still contains CHANGE_ME placeholders — edit it and re-run"
+fi
 chmod 600 "$GEN_CAT"
 chown root:sentinel "$GEN_CAT" 2>/dev/null || chown root:root "$GEN_CAT"
 step_ok "config in $ETC"
