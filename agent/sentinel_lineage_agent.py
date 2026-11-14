@@ -258,14 +258,17 @@ def apply_directive(payload: dict) -> bool:
     _apply_hash_allowlist({e["value"] for e in body.get("allowlist", [])
                            if e.get("tier") == "hash" and len(e.get("value", "")) == 64})
 
-    if ENFORCEMENT_MODE == "enforce":
-        for cmd in body.get("commands", []):
-            if cmd.get("type") != "block_lineage" or cmd.get("action") != "kill":
-                continue                       # unknown / unsupported command types are skipped
-            try:
-                lid = int(cmd["lineage_id"], 16)
-            except (KeyError, ValueError, TypeError):
-                continue
+    for cmd in body.get("commands", []):
+        ctype = cmd.get("type")
+        try:
+            lid = int(cmd["lineage_id"], 16)
+        except (KeyError, ValueError, TypeError):
+            continue
+        if ctype == "unblock_lineage":
+            # Unblock is a relaxation: apply it in either mode.
+            unblock_lineage(lid)
+        elif (ctype == "block_lineage" and cmd.get("action") == "kill"
+              and ENFORCEMENT_MODE == "enforce"):
             if lid not in blocked_lineages:
                 block_lineage(lid, Rule(id=0, name="Operator block (hub)", pattern=""))
     return True
@@ -345,6 +348,20 @@ stats = {
 stats_lock = threading.Lock()
 loader = None
 running = True
+
+# ─── Safety net: processes the agent must never kill, and dry-run mode ───
+# A bad rule on a laptop must not be able to lock the operator out.
+DRY_RUN = os.getenv("SENTINEL_DRY_RUN", "0") == "1" or "--dry-run" in sys.argv
+PROTECTED_COMMS = {c.strip() for c in os.getenv(
+    "SENTINEL_PROTECTED_COMMS", "systemd,init,sshd").split(",") if c.strip()}
+PROTECTED_PIDS = {1, os.getpid(), os.getppid()}
+
+
+def is_protected(pid: int, entry=None) -> bool:
+    """True for PID 1, the agent, its parent shell, and protected comms."""
+    if pid <= 1 or pid in PROTECTED_PIDS:
+        return True
+    return entry is not None and entry.comm in PROTECTED_COMMS
 
 # Eviction config
 LINEAGE_TREE_MAX = int(os.environ.get("SENTINEL_LINEAGE_MAX", "100000"))
@@ -798,6 +815,12 @@ def _start_time(pid: int) -> int | None:
 def _kill_if_same_process(pid: int, entry: LineageEntry) -> bool:
     """Kill process only if its start_time matches (prevents PID reuse kills).
     Entries with no recorded start_time are skipped (kernel block still applies)."""
+    if is_protected(pid, entry):
+        print(f"[*] protected, not killing PID {pid} ({entry.comm})")
+        return False
+    if DRY_RUN:
+        print(f"[dry-run] would kill PID {pid} ({entry.comm}, lineage {entry.lineage_id:#x})")
+        return False
     if not entry.start_time:
         return False  # no start_time recorded, cannot verify PID ownership
     if _start_time(pid) != entry.start_time:
@@ -1123,6 +1146,9 @@ def block_lineage(lineage_id: int, rule: Rule):
     ids = _lineage_subtree(lineage_id)
     for lid in ids:
         blocked_lineages.add(lid)
+        if DRY_RUN:
+            print(f"[dry-run] would block lineage {lid:#x} in the kernel map")
+            continue
         try:
             loader.block(lid)
         except Exception as e:
@@ -1136,6 +1162,27 @@ def block_lineage(lineage_id: int, rule: Rule):
         stats["blocked_lineages"] += 1
 
     print(f"[!] BLOCKED lineage {lineage_id:#x} (+{len(ids) - 1} descendants) (Rule: {rule.name})")
+
+def unblock_lineage(lineage_id: int):
+    """Lift an operator block from the kernel map and the userspace set.
+
+    A false positive with no way to undo it is the first thing a real operator
+    hits, so this must always be available and idempotent.
+    """
+    global blocked_lineages
+    if lineage_id not in blocked_lineages:
+        return
+    blocked_lineages.discard(lineage_id)
+    if DRY_RUN:
+        print(f"[dry-run] would clear lineage {lineage_id:#x} from the kernel map")
+    else:
+        try:
+            loader.unblock(lineage_id)
+        except Exception as e:
+            print(f"[-] Failed to clear blocked_lineages map: {e}")
+    with stats_lock:
+        stats["blocked_lineages"] = max(0, stats["blocked_lineages"] - 1)
+    print(f"[*] UNBLOCKED lineage {lineage_id:#x}")
 
 def quarantine_lineage(lineage_id: int, entry: LineageEntry, rule: Rule):
     """Quarantine lineage - restrict network, file access"""

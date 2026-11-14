@@ -140,6 +140,23 @@ class AgentApplies(unittest.TestCase):
         self.mock_loader.block.assert_called_with(lid)
         self.assertIn(777, self.killed)
 
+    def test_operator_unblock_clears_kernel_map_and_set(self):
+        self.c.post("/api/v1/mode", json={"mode": "enforce"}, headers=self.h)
+        lid = 0x0BADF00D
+        A.lineage_tree[778] = A.LineageEntry(
+            lineage_id=lid, parent_lineage_id=0, pid=778, ppid=1, uid=0, gid=0, ns_pid=778,
+            comm="x", binary_path="/tmp/x", cmdline="x", exec_timestamp=0.0, flags=0, start_time=42)
+        self.c.post(f"/api/v1/lineage/{lid:#x}/block", headers=self.h)
+        self.assertTrue(A.apply_directive(self._directive()))
+        self.assertIn(lid, A.blocked_lineages)
+
+        r = self.c.post(f"/api/v1/lineage/{lid:#x}/unblock", headers=self.h)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["status"], "unblocked")
+        self.assertTrue(A.apply_directive(self._directive()))
+        self.assertNotIn(lid, A.blocked_lineages)
+        self.mock_loader.unblock.assert_any_call(lid)
+
     def test_learn_mode_does_not_block(self):
         self.c.post("/api/v1/lineage/0x5555/block", headers=self.h)
         self.c.post("/api/v1/mode", json={"mode": "learn"}, headers=self.h)

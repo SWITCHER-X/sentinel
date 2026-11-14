@@ -91,6 +91,30 @@ def test_kill_skips_entry_without_start_time():
     assert sent == []
 
 
+def test_protected_process_is_never_killed():
+    _reset()
+    e = _mk(1, 0x10, start=111)
+    sent = []
+    fake_os = types.SimpleNamespace(kill=lambda p, s: sent.append(p), environ=os.environ, path=os.path, getpid=os.getpid)
+    with _Patch(_start_time=lambda pid: 111, os=fake_os):
+        assert A._kill_if_same_process(1, e) is False
+    assert sent == [], "PID 1 must never be signalled"
+    e.comm = "sshd"
+    assert A.is_protected(31337, e) is True
+
+
+def test_dry_run_never_kills_or_blocks():
+    _reset()
+    _mk(4242, 0x10, start=111)
+    sent = []
+    fake_os = types.SimpleNamespace(kill=lambda p, s: sent.append(p), environ=os.environ, path=os.path, getpid=os.getpid)
+    with _Patch(_start_time=lambda pid: 111, os=fake_os, DRY_RUN=True, loader=None):
+        assert A._kill_if_same_process(4242, A.lineage_tree[4242]) is False
+        A.block_lineage(0x10, A.Rule(id=0, name="t", pattern=""))
+    assert sent == [], "dry-run must not signal anything"
+    assert 0x10 in A.blocked_lineages
+
+
 def test_block_subtree_does_not_kill_recycled_descendant():
     _reset()
     _mk(100, 0x1, 0, start=5)

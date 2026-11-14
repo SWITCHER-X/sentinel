@@ -598,6 +598,35 @@ def _admin_block_add(lineage_id: int) -> None:
     ids = _admin_blocked()
     ids.add(lineage_id)
     sa.meta_set("admin_blocked", json.dumps(sorted(f"0x{x:016X}" for x in ids)))
+    _admin_unblock_remove(lineage_id)
+
+
+def _admin_block_remove(lineage_id: int) -> None:
+    ids = _admin_blocked()
+    if lineage_id in ids:
+        ids.discard(lineage_id)
+        sa.meta_set("admin_blocked", json.dumps(sorted(f"0x{x:016X}" for x in ids)))
+
+
+def _admin_unblocked() -> set:
+    """Lineages an operator explicitly unblocked; agents poll these as commands."""
+    try:
+        return {int(x, 16) for x in json.loads(sa.meta_get("admin_unblocked", "[]"))}
+    except (ValueError, TypeError):
+        return set()
+
+
+def _admin_unblock_add(lineage_id: int) -> None:
+    ids = _admin_unblocked()
+    ids.add(lineage_id)
+    sa.meta_set("admin_unblocked", json.dumps(sorted(f"0x{x:016X}" for x in ids)))
+
+
+def _admin_unblock_remove(lineage_id: int) -> None:
+    ids = _admin_unblocked()
+    if lineage_id in ids:
+        ids.discard(lineage_id)
+        sa.meta_set("admin_unblocked", json.dumps(sorted(f"0x{x:016X}" for x in ids)))
 
 
 def _parse_lineage_id(lid):
@@ -640,6 +669,26 @@ def block_lineage(lid):
     save_lineage_db()
     sa.audit("admin", "lineage.block", f"{lineage_id:#x}")
     return jsonify({"status": "blocked", "lineage_id": f"0x{lineage_id:016X}"})
+
+
+@app.route("/api/v1/lineage/<string:lid>/unblock", methods=["POST"])
+def unblock_lineage(lid):
+    """Lift an operator block - a false positive must always be reversible."""
+    tok = request.cookies.get("sentinel_session", "")
+    if not (sa.session_verify(tok) and sa.csrf_verify(tok, request.headers.get("X-CSRF-Token", ""))):
+        return jsonify({"error": "forbidden"}), 403
+
+    lineage_id = _parse_lineage_id(lid)
+    if lineage_id is None:
+        return jsonify({"error": "invalid lineage id"}), 400
+
+    STATE.remove_blocked_lineage(lineage_id)
+    _admin_block_remove(lineage_id)
+    _admin_unblock_add(lineage_id)
+    STATE.update_lineage_tree(lineage_id, lambda t: t.__setitem__("blocked", False))
+    save_lineage_db()
+    sa.audit("admin", "lineage.unblock", f"{lineage_id:#x}")
+    return jsonify({"status": "unblocked", "lineage_id": f"0x{lineage_id:016X}"})
 
 
 @app.route("/api/v1/lineage/<string:lid>/trust", methods=["POST"])
@@ -695,6 +744,7 @@ def agent_commands():
       {"schema": 1, "server_time": <epoch float>, "revision": "<16 hex>",
        "mode": "learn" | "enforce",
        "commands": [{"type": "block_lineage", "lineage_id": "0x...", "action": "kill"},
+                    {"type": "unblock_lineage", "lineage_id": "0x..."},
                     {"type": "trust_lineage", "lineage_id": "0x..."}],
        "allowlist": [{"tier", "value", "label", "added_at", "added_by"}, ...],
        "signature": "<HMAC-SHA256 hex over the canonical JSON of every other field>"}
@@ -707,6 +757,8 @@ def agent_commands():
 
     commands = [{"type": "block_lineage", "lineage_id": f"0x{lid:016X}", "action": "kill"}
                 for lid in sorted(_admin_blocked())]
+    commands += [{"type": "unblock_lineage", "lineage_id": f"0x{lid:016X}"}
+                 for lid in sorted(_admin_unblocked())]
     commands += [{"type": "trust_lineage", "lineage_id": f"0x{lid:016X}"}
                  for lid in sorted(STATE.get_trusted_lineages())]
     body = {

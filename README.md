@@ -69,6 +69,7 @@ lineage_id = hash(parent_lineage_id, binary_path, uid, timestamp_ns)
 - 73 detection rules with MITRE ATT&CK tags (see [Detection rules](#detection-rules))
 - Actions: log, alert, kill process and children, block lineage, quarantine
 - Learn mode that downgrades every enforcing action to a log entry
+- Protected-process safety net: PID 1, the agent, its parent shell and `sshd` are never killed; `--dry-run` (or `SENTINEL_DRY_RUN=1`) logs every would-be kill and skips kernel-map writes
 - HMAC-verified allowlist sync from the hub
 - Periodic anomaly checks for DNS query rate and data volume
 
@@ -366,7 +367,7 @@ Project SENTINEL is **alpha** software (v1.0.0), developed and tested on Arch Li
 - **Throughput** — `hash_binary` cached with `@lru_cache`, telemetry sent from async worker queue (10k max, drop counter logged)
 
 ### ⚠️ Remaining gaps
-- **Unblock command** — operator blocks from dashboard are pushed to agent (signed directive, applied in Enforce mode); no unblock command yet
+- **Unblock command** — operator blocks and unblocks from the dashboard are pushed to the agent (signed directive, applied in Enforce mode); `sentinelctl lineage unblock --lineage-id 0x…`
 - **Network detectors** — DNS-rate, geo-blocking, data-volume checks are stubbed (loader doesn't expose `dns_queries`/`data_volume` maps yet); `icmp_events` removed (nothing emits it)
 - **Hub scale** — state backend pluggable (`collector/state.py`). In-memory default (single gunicorn worker `-w 1`). Set `SENTINEL_REDIS_URL` to use Redis and scale workers
 - **Rule 5006 removed** — was noisy (alerted on every `ls`/`ps`/`top`); can be re-added with a real pattern
