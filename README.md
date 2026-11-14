@@ -249,6 +249,42 @@ python3 tools/validate_rules.py config/rules.yaml
 
 ---
 
+## Updating
+
+The dashboard header has an **UPDATE** button. The hub does not update itself
+directly: it asks a root-only systemd unit (`sentinel-update.service`) to run
+`tools/self_update.py`, and polls its status.
+
+A staged update:
+
+1. fetches `SENTINEL_UPDATE_REF` from `SENTINEL_UPDATE_REPO`,
+2. builds the CO-RE object and `sentinel-loader`,
+3. stages the tree in `/opt/sentinel.staging` and installs Python deps,
+4. boots the staged hub on a **spare port** and waits for `/health`,
+5. cuts over with `rsync` + `systemctl reload` (gunicorn `SIGHUP`: workers are
+   replaced, the listening socket is never closed — no dropped connections),
+6. verifies the live hub and records the new commit in `/opt/sentinel/.install-meta`.
+
+If the unit has no `ExecReload` yet (first update from an older install), it
+falls back to a restart. A failed verification never reaches cutover: the old
+hub keeps running and the status file reports the error.
+
+Configure it in `/etc/sentinel/sentinel.env`:
+
+```env
+SENTINEL_UPDATE_REF=master
+# SENTINEL_UPDATE_REPO=https://github.com/SWITCHER-X/sentinel.git
+# SENTINEL_UPDATE_PORT=5001          # spare port used for verification
+```
+
+Manual control:
+
+```bash
+sudo /opt/sentinel/.venv/bin/python /opt/sentinel/tools/self_update.py --check   # update available?
+sudo /opt/sentinel/.venv/bin/python /opt/sentinel/tools/self_update.py --dry-run # fetch only
+sudo /opt/sentinel/.venv/bin/python /opt/sentinel/tools/self_update.py           # update now
+```
+
 ## Learn vs. Enforce
 
 The header badge on the dashboard toggles the global mode. The agent polls the hub every 30 seconds.

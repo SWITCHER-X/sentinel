@@ -217,8 +217,8 @@ BASE_DEPS=()
 case "$PKG" in
   apt-get)
     if [[ $PROGRESS -eq 1 ]]; then apt-get update -q; else apt-get update -qq; fi
-    BASE_DEPS=(python3 python3-venv python3-pip rsync curl openssl) ;;
-  pacman)  BASE_DEPS=(python python-pip rsync curl openssl) ;;
+    BASE_DEPS=(python3 python3-venv python3-pip rsync curl openssl git) ;;
+  pacman)  BASE_DEPS=(python python-pip rsync curl openssl git) ;;
   dnf|yum) BASE_DEPS=(python3 python3-pip rsync curl openssl git) ;;
   zypper)  BASE_DEPS=(python3 python3-pip python3-venv rsync curl openssl) ;;
 esac
@@ -281,7 +281,14 @@ if [[ $PROGRESS -eq 1 ]]; then RSYNC_OPTS+=(--info=progress2 --human-readable); 
 rsync "${RSYNC_OPTS[@]}" "$SRC_DIR"/ "$OPT"/
 chown -R sentinel:sentinel "$OPT"
 chmod 750 "$OPT"
-step_ok "source copied"
+INSTALL_COMMIT=$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
+{
+  echo "commit=$INSTALL_COMMIT"
+  echo "installed_at=$(date -Is)"
+} > "$OPT/.install-meta"
+chmod 644 "$OPT/.install-meta"
+chown sentinel:sentinel "$OPT/.install-meta"
+step_ok "source copied (${INSTALL_COMMIT:0:12})"
 
 # ─── [4/8] Python environment ───
 step "Preparing Python environment"
@@ -390,6 +397,9 @@ add_secret "SENTINEL_AGENT_KEY"      "$(openssl rand -hex 32 2>/dev/null || head
 add_secret "SENTINEL_SESSION_SECRET" "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p -c 64)"
 add_secret "SENTINEL_ALLOWLIST_KEY"  "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p -c 64)"
 add_secret "SENTINEL_DB_PATH"        "$VARLIB/sentinel.db"
+UPDATE_BRANCH=$(git -C "$SRC_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo master)
+[[ "$UPDATE_BRANCH" == "HEAD" ]] && UPDATE_BRANCH=master
+add_secret "SENTINEL_UPDATE_REF"      "$UPDATE_BRANCH"
 
 # Never leave a placeholder behind: the hub refuses to boot on one.
 if grep -q '=CHANGE_ME' "$GEN_CAT"; then
@@ -405,9 +415,21 @@ SYSTEMD=0
 if command -v systemctl >/dev/null 2>&1; then
   SYSTEMD=1
   install -m 644 "$SRC_DIR/deploy/sentinel-hub.service" /etc/systemd/system/
+  install -m 644 "$SRC_DIR/deploy/sentinel-update.service" /etc/systemd/system/
   systemctl daemon-reload
   systemctl enable --now sentinel-hub
-  note "sentinel-hub enabled"
+  note "sentinel-hub enabled (gunicorn, reload = zero-downtime cutover)"
+
+  # Let the unprivileged hub trigger exactly one root action: the updater.
+  SUDOERS_FILE=/etc/sudoers.d/sentinel-update
+  printf 'sentinel ALL=(root) NOPASSWD: /usr/bin/systemctl start --no-block sentinel-update.service\n' > "$SUDOERS_FILE"
+  chmod 440 "$SUDOERS_FILE"
+  if command -v visudo >/dev/null 2>&1 && ! visudo -cf "$SUDOERS_FILE" >/dev/null 2>&1; then
+    rm -f "$SUDOERS_FILE"
+    note "WARN: sudoers drop-in failed validation — dashboard updates disabled"
+  else
+    note "dashboard update trigger installed"
+  fi
 
   if [[ $HUB_ONLY -eq 0 ]]; then
     [[ -f /sys/kernel/btf/vmlinux ]] \
@@ -464,6 +486,7 @@ py_import()       { "$OPT/.venv/bin/python" -c "import $1"; }
 health_ok()       { curl -sf --max-time 3 -H "X-Sentinel-Key: ${AGENT_KEY_SYNCED:-}" "http://127.0.0.1:$PORT/health" 2>/dev/null | grep -qE '"status":"(ok|healthy)"'; }
 page_ok()         { curl -sf --max-time 3 -o /dev/null "http://127.0.0.1:$PORT/login"; }
 agent_active()    { systemctl is-active --quiet sentinel-agent 2>/dev/null; }
+update_ready()    { [[ -f /etc/sudoers.d/sentinel-update ]] && [[ -f /etc/systemd/system/sentinel-update.service ]]; }
 state_owned()     { [[ "$(stat -c %U "$VARLIB" 2>/dev/null)" == "sentinel" ]] && \
                     { [[ ! -e "$VARLIB/sentinel.db" ]] || [[ "$(stat -c %U "$VARLIB/sentinel.db")" == "sentinel" ]]; }; }
 rules_ok()        { "$OPT/.venv/bin/python" "$OPT/tools/validate_rules.py" "$ETC/rules.yaml" 2>&1 | grep -q "All rules passed"; }
@@ -493,6 +516,7 @@ printf '       -- verification --\n'
 run_chk  "secrets have no CHANGE_ME placeholders" no_placeholders "$GEN_CAT"
 run_chk  "secret file permissions are 600" env_perms "$GEN_CAT"
 run_chk  "state dir and auth DB owned by sentinel" state_owned
+run_warn "dashboard self-update wired" update_ready
 run_chk  "Python env imports flask" py_import flask
 run_chk  "Python env imports yaml" py_import yaml
 run_chk  "Python env imports gunicorn" py_import gunicorn

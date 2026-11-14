@@ -333,6 +333,47 @@ class SentinelDashboard {
     } catch (e) {}
   }
 
+  // ─── Self-update (staged: new version verified on a spare port first) ───
+  async startUpdate() {
+    const ok = confirm(
+      'Install the latest version from git?\n\n' +
+      'The running hub keeps serving while the new version is fetched, built ' +
+      'and health-checked, then switches over with a reload.'
+    );
+    if (!ok) return;
+    try {
+      await this.api('/system/update', { method: 'POST' });
+      this.showToast('Update started', 'warning');
+      this.pollUpdate(true);
+    } catch (e) {
+      this.showToast(`Could not start update: ${e.message}`, 'error');
+    }
+  }
+
+  async pollUpdate(announce = false) {
+    const btn = this.$('#act-update');
+    const runningStates = ['starting', 'fetching', 'building', 'staging', 'verifying', 'cutover'];
+    try {
+      const st = await this.api('/system/update');
+      const running = runningStates.includes(st.state);
+      if (btn) {
+        btn.disabled = running;
+        btn.textContent = running ? 'UPDATING…' : 'UPDATE';
+        btn.title = `${st.state}${st.message ? ' — ' + st.message : ''}`;
+      }
+      if (running) {
+        setTimeout(() => this.pollUpdate(false), 2500);
+        return;
+      }
+      if (!announce) return;
+      if (st.state === 'done') this.showToast(`Updated to ${(st.to_commit || '').slice(0, 12)}`, 'ok');
+      else if (st.state === 'up-to-date') this.showToast('Already up to date', 'ok');
+      else if (st.state === 'failed') this.showToast(`Update failed: ${st.message}`, 'error');
+    } catch (e) {
+      if (btn) btn.disabled = false;
+    }
+  }
+
   setModeBadge(mode) {
     this.state.mode = mode;
     const badge = this.$('#mode-badge');
@@ -1518,6 +1559,7 @@ class SentinelDashboard {
   bindEvents() {
     this.els.themeToggle?.addEventListener('click', () => this.toggleTheme());
     this.$('#mode-badge')?.addEventListener('click', () => this.toggleMode());
+    this.$('#act-update')?.addEventListener('click', () => this.startUpdate());
     this.els.paletteTrigger?.addEventListener('click', () => this.openCommandPalette());
     this.els.detailClose?.addEventListener('click', () => this.closeLineageDetail());
     this.els.actExport?.addEventListener('click', () => this.exportJSON());
@@ -1600,6 +1642,7 @@ class SentinelDashboard {
     this.renderFilterChips();
     this.bindEvents();
     this.initSession();
+    this.pollUpdate(false);
     this.layoutTimeline();
     this.startPolling();
     this.connectEventStream();

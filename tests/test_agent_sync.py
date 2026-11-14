@@ -10,13 +10,15 @@ Covers the response structure the hub emits and how the agent verifies and appli
 Drives the real hub (Flask test client) and the real agent module (loader stubbed).
 Run: python3 tests/test_agent_sync.py
 """
+import json
 import os
 import sys
 import tempfile
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 REPO = Path(__file__).resolve().parent.parent
 _tmp = tempfile.mkdtemp(prefix="sentinel-sync-test-")
@@ -117,6 +119,54 @@ class HubDirective(unittest.TestCase):
         replay = hub.app.test_client().get(
             "/api/v1/csrf", headers={"Cookie": f"sentinel_session={token}"})
         self.assertEqual(replay.status_code, 401)
+
+    def test_update_status_requires_a_session(self):
+        self.assertEqual(hub.app.test_client().get("/api/v1/system/update").status_code, 401)
+
+    def test_update_status_reports_installed_version(self):
+        self._admin()
+        status_file = Path(tempfile.mkdtemp()) / "update.json"
+        status_file.write_text(json.dumps({"state": "done", "message": "ok", "to_commit": "abc123"}))
+        old, hub.UPDATE_STATUS_FILE = hub.UPDATE_STATUS_FILE, str(status_file)
+        self.addCleanup(setattr, hub, "UPDATE_STATUS_FILE", old)
+        data = self.c.get("/api/v1/system/update").get_json()
+        self.assertEqual(data["state"], "done")
+        self.assertEqual(data["to_commit"], "abc123")
+        self.assertIn("installed", data)
+
+    def test_update_post_requires_csrf(self):
+        self._admin()
+        self.assertEqual(self.c.post("/api/v1/system/update", json={}).status_code, 403)
+
+    def test_update_post_starts_the_updater(self):
+        h = self._admin()
+        fake = SimpleNamespace(returncode=0, stdout="", stderr="")
+        with patch.object(hub.subprocess, "run", return_value=fake) as run:
+            r = self.c.post("/api/v1/system/update", headers=h, json={})
+        self.assertEqual(r.status_code, 202)
+        self.assertTrue(r.get_json()["ok"])
+        args = run.call_args[0][0]
+        self.assertEqual(args[:3], ["sudo", "-n", "systemctl"])
+        self.assertIn("sentinel-update.service", args)
+
+    def test_update_post_reports_a_failing_trigger(self):
+        h = self._admin()
+        fake = SimpleNamespace(returncode=1, stdout="", stderr="no sudo rule")
+        with patch.object(hub.subprocess, "run", return_value=fake):
+            r = self.c.post("/api/v1/system/update", headers=h, json={})
+        self.assertEqual(r.status_code, 503)
+        self.assertIn("no sudo rule", r.get_json()["detail"])
+
+    def test_update_post_conflicts_while_one_is_running(self):
+        h = self._admin()
+        status_file = Path(tempfile.mkdtemp()) / "update.json"
+        status_file.write_text(json.dumps({"state": "verifying"}))
+        old, hub.UPDATE_STATUS_FILE = hub.UPDATE_STATUS_FILE, str(status_file)
+        self.addCleanup(setattr, hub, "UPDATE_STATUS_FILE", old)
+        with patch.object(hub.subprocess, "run") as run:
+            r = self.c.post("/api/v1/system/update", headers=h, json={})
+        self.assertEqual(r.status_code, 409)
+        run.assert_not_called()
 
     def test_mode_change_is_reflected(self):
         h = self._admin()

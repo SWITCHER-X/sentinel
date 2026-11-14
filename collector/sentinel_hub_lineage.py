@@ -16,6 +16,7 @@ import hmac
 import hashlib
 import urllib.request
 import functools
+import subprocess
 import threading
 from collections import defaultdict
 from flask import Flask, request, jsonify, Response, send_file, abort, redirect, make_response
@@ -42,6 +43,34 @@ sa.set_state_backend(STATE)  # share login throttling across workers when Redis 
 SESSION_COOKIE_SECURE = os.getenv("SENTINEL_SESSION_COOKIE_SECURE", "0") == "1"
 
 SESSION_COOKIE = "sentinel_session"
+
+# ─── Self-update plumbing (tools/self_update.py writes the status file) ───
+UPDATE_STATUS_FILE = os.getenv("SENTINEL_UPDATE_STATUS", "/var/lib/sentinel/update.json")
+UPDATE_SERVICE = "sentinel-update.service"
+UPDATE_REF = os.getenv("SENTINEL_UPDATE_REF", "master")
+UPDATE_RUNNING_STATES = {"starting", "fetching", "building", "staging", "verifying", "cutover"}
+
+
+def _update_status() -> dict:
+    try:
+        with open(UPDATE_STATUS_FILE, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {"state": "idle"}
+    except (OSError, ValueError):
+        return {"state": "idle", "message": "no update has run yet"}
+
+
+def _installed_meta() -> dict:
+    out: dict = {}
+    try:
+        with open("/opt/sentinel/.install-meta", encoding="utf-8") as fh:
+            for line in fh:
+                if "=" in line:
+                    key, _, value = line.partition("=")
+                    out[key.strip()] = value.strip()
+    except OSError:
+        pass
+    return out
 
 
 def _set_session_cookie(resp, token: str):
@@ -488,6 +517,40 @@ def _session_and_security_headers(resp):
         if claims and time.time() - claims["iat"] >= sa.SESSION_REFRESH_AFTER:
             _set_session_cookie(resp, sa.session_create(claims.get("sub") or "admin"))
     return resp
+
+
+@app.route("/api/v1/system/update", methods=["GET", "POST"])
+def api_system_update():
+    """GET: update status + installed version. POST: start a staged update."""
+    token = request.cookies.get(SESSION_COOKIE, "")
+
+    if request.method == "GET":
+        if not sa.session_verify(token):
+            return jsonify({"error": "unauthorized"}), 401
+        state = _update_status()
+        return jsonify({**state, "installed": _installed_meta(), "ref": UPDATE_REF})
+
+    if not (sa.session_verify(token) and
+            sa.csrf_verify(token, request.headers.get("X-CSRF-Token", ""))):
+        return jsonify({"error": "forbidden"}), 403
+
+    state = _update_status()
+    if state.get("state") in UPDATE_RUNNING_STATES:
+        return jsonify({"error": "an update is already running", "state": state}), 409
+
+    try:
+        proc = subprocess.run(
+            ["sudo", "-n", "systemctl", "start", "--no-block", UPDATE_SERVICE],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return jsonify({"error": "cannot start the updater", "detail": str(exc)[:300]}), 503
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()[-300:]
+        return jsonify({"error": "cannot start the updater", "detail": detail}), 503
+
+    sa.audit("admin", "system.update", f"ref={UPDATE_REF}")
+    return jsonify({"ok": True, "state": "starting"}), 202
 
 
 @app.route("/api/v1/csrf", methods=["GET"])
