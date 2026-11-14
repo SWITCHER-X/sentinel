@@ -1,38 +1,54 @@
+<div align="center">
+
 # SENTINEL
 
-**Self-hosted eBPF endpoint detection and response for Linux.** It watches every
-process, connection and sensitive file access on your machine, follows each one
-back through its process lineage, and can kill a whole tree when a rule fires.
+**Self-hosted eBPF endpoint detection and response for Linux.**<br>
+Every process, connection and sensitive file access — traced back through its lineage, and killable as a tree.
 
-No cloud account. No agent binary to trust. One install, one host, one console.
+[![Release](https://img.shields.io/github/v/release/SWITCHER-X/sentinel?include_prereleases&style=flat-square&label=release&color=2ea043)](https://github.com/SWITCHER-X/sentinel/releases)
+[![Tests](https://img.shields.io/badge/tests-119%20passing-2ea043?style=flat-square)](#development)
+[![Platform](https://img.shields.io/badge/platform-linux%20x86__64%20%7C%20arm64-1f6feb?style=flat-square)](#requirements)
+[![Status](https://img.shields.io/badge/status-alpha-d29922?style=flat-square)](#status)
+[![License](https://img.shields.io/badge/license-source--available-6e7781?style=flat-square)](LICENSE)
 
-```
-status: alpha · tests: 119 passing · platform: Linux (x86_64/arm64) · license: see LICENSE
-```
+[Quick start](#quick-start) · [60-second tour](#a-60-second-tour) · [Lineages](#lineages-states-and-operations) · [Detection](#detection) · [Troubleshooting](#troubleshooting) · [Security](docs/SECURITY.md) · [Operations](docs/OPERATIONS.md)
+
+</div>
 
 ---
+
+**SENTINEL watches the kernel, not the filesystem.** It follows every `execve`,
+`connect` and sensitive `open`, attaches each event to the process tree that
+caused it, and can kill that whole tree when a rule fires. No cloud account, no
+managed control plane — one install, one host, one console.
+
+> [!TIP]
+> **New here?** Read the [60-second tour](#a-60-second-tour) and skip the rest.
+> Everything below the tour lives in collapsible sections on purpose.
 
 ## What it does, in one screen
 
 | It watches | It shows | You can |
-|---|---|---|
-| process executions and their full ancestry | a live event feed with a lineage id on every event | keep it observing (learn) or enforce (kill) |
+| :--- | :--- | :--- |
+| process executions and their full ancestry | a live feed with a lineage id on every event | keep it observing (**learn**) or enforcing (**kill**) |
 | outbound connections | the process tree behind any alert | block or trust a lineage from the console |
-| sensitive file access (`/etc/shadow`, SSH keys, …) | MITRE technique, rule, pid, argv on demand | export evidence, audit actions |
-| loader/kernel tampering | whether the sensor is healthy (and why not) | update in place without downtime |
-
-The console is designed for **triage**: scan the feed, spot the one event that
-matters, open it, act. It is not a dashboard of gauges.
+| sensitive file access | rule, pid, argv and MITRE technique on demand | export evidence, audit every action |
+| loader / kernel tampering | whether the sensor is healthy — and why not | update in place without downtime |
 
 ```mermaid
 flowchart LR
-    K[kernel events<br/>exec · connect · open] -->|eBPF + CO-RE| A[agent]
-    A -->|lineage + rule match| H[hub]
-    H -->|SQLite| D[(state)]
-    H -->|SSE| U[console]
-    U -->|block / trust / mode| H
-    H -->|commands| A
-    A -->|SIGKILL| K
+    K["kernel events<br/>exec · connect · open"] -->|"eBPF + CO-RE"| A["agent"]
+    A -->|"lineage + rule match"| H["hub"]
+    H -->|"SQLite"| D[("state")]
+    H -->|"SSE"| U["console"]
+    U -->|"block / trust / mode"| H
+    H -->|"commands"| A
+    A -->|"SIGKILL"| K
+
+    classDef k fill:#1f6feb22,stroke:#1f6feb,color:#e7edf3
+    classDef a fill:#2ea04322,stroke:#2ea043,color:#e7edf3
+    classDef h fill:#8fb0d922,stroke:#8fb0d9,color:#e7edf3
+    class K,A,H k
 ```
 
 ## Quick start
@@ -43,180 +59,176 @@ cd sentinel
 sudo ./install.sh
 ```
 
-The installer prints the dashboard URL and **generates an admin password once**.
-It enables both services at boot, verifies the stack, and tells you exactly what
-is broken if something is.
+> [!IMPORTANT]
+> The installer prints the dashboard URL and generates the **admin password once**
+> (stored in `/etc/sentinel/sentinel.env`, mode `600`). It enables both services at
+> boot, checks the kernel features, and tells you exactly what is broken if
+> anything is.
 
 ```bash
-# when it is done
 xdg-open http://127.0.0.1:5000     # log in as admin
 ```
 
-> Requires Linux with BTF (`/sys/kernel/btf/vmlinux`, any mainline/distro kernel
-> since 5.4) and a mounted tracefs. The installer checks both and mounts tracefs
-> when it is missing.
+<details>
+<summary><b>Requirements</b></summary>
+
+| Requirement | Why |
+| :--- | :--- |
+| Linux 5.4+ with BTF (`/sys/kernel/btf/vmlinux`) | CO-RE object loading |
+| tracefs (`/sys/kernel/tracing` or debugfs fallback) | tracepoint attachment |
+| BPF LSM in the active LSM list | enforcement hooks (`task_kill`, `file_open`) |
+| Python 3.10+ and systemd | hub and services |
+| root for the agent | eBPF needs `CAP_BPF`/`CAP_SYS_ADMIN` |
+
+The installer checks all of these, mounts tracefs when missing, and warns when
+enforcement will be degraded.
+</details>
 
 ---
 
 ## A 60-second tour
 
-1. **Feed.** Each row is one event: time · severity · process · context. Click a
-   row to select it; press `I` for the investigation view (rule, pid, lineage,
-   graph).
-2. **Lineages.** Every event belongs to a lineage (one login/root process tree).
-   The rail lists them with a state: `stable`, `monitoring`, `N threats`,
-   `trusted`, `blocked`. Right-click one for operations.
-3. **Inspector.** Open a lineage to see its process tree, its events, the MITRE
-   techniques involved, and the actions you can take.
-4. **Learn / enforce.** The pill in the header is the kill switch. In *learn*
-   mode everything is logged and nothing is killed; switch to *enforce* when you
-   trust the rules and the allowlist.
-5. **Troubleshooter.** If the feed is empty, the console diagnoses the ingest
-   path itself (agent unit, telemetry age, BTF, tracefs, LSM, key, DB) and gives
-   you the fix. No `journalctl` archaeology required.
+| Step | What you do | What you learn |
+| :---: | :--- | :--- |
+| **1** | Open the console. Rows are one event each: time · severity · process · context. | The feed is the page; there is no dashboard of gauges. |
+| **2** | Click a row, press `I`. | Rule, pid, lineage, graph and argv — the forensic view. |
+| **3** | Look at the left rail. | Every event belongs to a lineage with a state: `stable`, `monitoring`, `N threats`, `trusted`, `blocked`. |
+| **4** | Right-click a lineage, or open the inspector. | **Block** kills the tree and remembers it; **Trust** silences a noisy-but-benign tree. |
+| **5** | Toggle the header pill: learn ⇄ enforce. | Learn logs everything, kills nothing. Enforce acts on `KILL` rules. |
+| **6** | Empty feed? | The console diagnoses the ingest path and hands you the fix. |
 
 <details>
 <summary><b>Keyboard shortcuts</b></summary>
 
 | Keys | Action |
-|---|---|
-| `Ctrl+K` | command palette (search lineages, hosts, actions) |
+| :--- | :--- |
+| `Ctrl` `K` | command palette (lineages, hosts, actions) |
 | `J` / `K` | next / previous event |
-| `Enter` | open the selected lineage in the inspector |
-| `I` | toggle normal ⇄ investigation view |
-| `G` | focus the graph (investigation view) |
-| `R` | refresh all data |
-| `E` | export visible events as JSON |
-| `Ctrl+B` | collapse the lineage rail |
-| `Ctrl+T` | light / dark theme |
+| `Enter` | open the selected lineage |
+| `I` | normal ⇄ investigation view |
+| `G` | focus the graph |
+| `R` | refresh data |
+| `E` | export visible events (JSON) |
+| `Ctrl` `B` | collapse the lineage rail |
+| `Ctrl` `T` | light / dark theme |
 | `Esc` | close palette / inspector |
 
 </details>
 
 ## Lineages, states and operations
 
-A **lineage** is the ancestry tree of one process: the parent chain, every child
-it spawns, and everything that happens under it. SENTINEL keys detections on the
-lineage, not just the pid, so blocking it stops the whole tree — including
-children spawned after the decision.
+A **lineage** is the ancestry tree of one process — the parent chain, every child
+it spawns, and everything that happens under it. Detections key on the lineage,
+not the pid, so blocking stops the whole tree, including children spawned later.
+
+```mermaid
+stateDiagram-v2
+    [*] --> monitoring : first exec
+    monitoring --> stable : clean for 10 min
+    stable --> threat : rule match
+    monitoring --> threat : rule match
+    threat --> trusted : operator trusts it
+    threat --> blocked : KILL rule / block
+    stable --> trusted : operator trusts it
+    blocked --> [*]
+    trusted --> [*]
+```
 
 | State | Meaning |
-|---|---|
+| :--- | :--- |
 | `monitoring` | seen, no threat, younger than the stability window |
-| `stable` | seen, no threat, alive longer than the stability window (10 min) |
+| `stable` | seen, no threat, alive longer than 10 minutes |
 | `N threats` | at least one rule matched inside this tree |
-| `trusted` | you allowlisted it; alerts are suppressed, nothing is killed |
-| `blocked` | you (or a KILL rule) stopped it; the kernel keeps refusing it |
+| `trusted` | allowlisted; alerts suppressed, nothing killed |
+| `blocked` | killed and refused in the kernel; survives restarts |
 
-Operations available on a lineage, from the inspector or right-click menu:
+Operations, from the inspector or right-click menu:
 
-- **Block** — record the intent in the hub, push it to the agent, SIGKILL the
-  tree. Blocked lineages stay blocked across restarts.
-- **Trust** — suppress future alerts for this lineage and its binary; use it for
-  noisy-but-benign tooling (backups, monitoring agents).
+- **Block** — record intent in the hub, push it to the agent, SIGKILL the tree.
+  Blocked lineages stay blocked across restarts.
+- **Trust** — suppress alerts for this lineage and binary (backups, monitoring).
 - **Focus / open** — inspect without changing state.
 - **Export** — JSON evidence of everything currently filtered.
 
-All admin actions are audited (`audit` table) with the operator and time.
+Every admin action is audited with the operator and time.
 
 <details>
 <summary><b>Why a tree and not just a pid?</b></summary>
 
 A single suspicious pid is easy to miss and easy to fake. The lineage ties the
 event to the process that started it (web server → shell → downloader → payload),
-so a rule match anywhere in the tree can be answered by killing the root, and an
-operator can see *why* something ran. It also lets the agent block a lineage
-once and have the kernel enforce it for every future child.
-</details>
-
-## Install
-
-<details>
-<summary><b>What the installer does</b></summary>
-
-1. Checks the host (Python ≥3.10, disk, port, kernel features) and prints a
-   progress bar per step.
-2. Builds the CO-RE object and libbpf loader (clang/lld, ccache when present).
-3. Installs `/opt/sentinel`, config in `/etc/sentinel`, state in
-   `/var/lib/sentinel`.
-4. Creates and starts `sentinel-hub` and `sentinel-agent`, **enabled at boot**,
-   and verifies both are up.
-5. Generates the secrets and the admin password (printed once, mode `600`).
-6. Runs 15 checks, including the dashboard, the API and the update path.
-
-Re-running is safe: it preserves credentials, config and data.
-</details>
-
-<details>
-<summary><b>Install without systemd / from source</b></summary>
-
-```bash
-python3 -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
-
-export SENTINEL_DB_PATH=/var/lib/sentinel/sentinel.db
-export SENTINEL_AGENT_KEY=... SENTINEL_SESSION_SECRET=... SENTINEL_ALLOWLIST_KEY=...
-export SENTINEL_ADMIN_PASSWORD=... SENTINEL_CONFIG=./config/rules.yaml
-python3 collector/sentinel_hub_lineage.py        # hub
-sudo python3 agent/sentinel_lineage_agent.py     # agent (needs root + tracefs)
-```
-
-The hub binds `127.0.0.1:5000` by default. Uninstall with
-`sudo ./uninstall.sh`.
+so a rule match anywhere in the tree can be answered by killing the root — and an
+operator can see *why* something ran.
 </details>
 
 ## Detection
 
-<details>
-<summary><b>Rules, learn/enforce, allowlist</b></summary>
+Rules live in `config/rules.yaml`: **92 built-in rules** across exec, network,
+file-integrity and anomaly scopes, each with `id`, `name`, `pattern`, `action`,
+`severity`, `mitre`, `tags`, `flags`.
 
-Rules live in `config/rules.yaml` (92 built-in rules, T1xxx–T17xxx):
-exec matching, network rules, file-integrity checks and anomaly rules. Each has
-`id`, `name`, `pattern`, `action`, `severity`, `mitre`, `tags`, `flags`.
+```mermaid
+sequenceDiagram
+    autonumber
+    participant K as kernel
+    participant A as agent
+    participant H as hub
+    participant O as operator
+    K->>A: execve event (lineage id)
+    A->>A: match rules (92)
+    alt KILL rule and enforce mode
+        A->>K: SIGKILL tree
+    end
+    A->>H: telemetry (killed flag)
+    O->>H: block lineage
+    H->>A: signed command
+    A->>K: SIGKILL remaining tree
+```
+
+<details>
+<summary><b>Learn vs enforce, allowlist, rule authoring</b></summary>
 
 - `KILL` rules stop the tree; `ALERT` rules only record.
-- **Learn mode** downgrades every action to logging (tagged `learn-mode`).
-- **Allowlist**: signed list distributed to agents; trusted binaries and trusted
-  lineages skip alerting.
-- Add a rule, validate it with `python3 tools/validate_rules.py`, restart the
-  agent.
+- **Learn mode** downgrades every action to logging (events tagged `learn-mode`).
+- **Allowlist**: signed list distributed to agents; trusted binaries/lineages skip
+  alerting.
+- Add a rule, then `python3 tools/validate_rules.py` and restart the agent.
 
-Detection is only half the loop: the console tells you which rule fired, on
-which lineage, with which arguments, so the rule can be tuned instead of
-silenced.
+Detection is only half the loop: the console shows which rule fired, on which
+lineage, with which arguments — so rules get tuned, not silenced.
 </details>
 
 <details>
 <summary><b>What SENTINEL does not do</b></summary>
 
 - No Windows/macOS agent, no network-wide correlation, no managed cloud.
-- No kernel-module signature scanning; it observes behavior, not files at rest.
-- Rules are heuristic (regex over cmdline, event types); they will need tuning
-  for your host. That is what learn mode and trust are for.
-- The agent runs as root with `CAP_SYS_ADMIN`/`CAP_BPF` because eBPF requires
-  it; see [docs/SECURITY.md](docs/SECURITY.md).
+- No file-at-rest AV; it observes behavior.
+- Rules are heuristic; they will need tuning for your host. That is what learn
+  mode and trust are for.
+- The agent runs as root by necessity — see [docs/SECURITY.md](docs/SECURITY.md).
 </details>
 
 ## Troubleshooting
 
+> [!NOTE]
+> The console's empty state runs the diagnosis for you. This section is the
+> manual fallback.
+
 <details>
 <summary><b>The feed is empty</b></summary>
 
-Open the console: the empty state runs a diagnosis and shows the failing check
-with a copyable fix. It covers:
-
 | Check | Typical fix |
-|---|---|
-| agent unit missing/inactive | `sudo systemctl start sentinel-agent` |
+| :--- | :--- |
+| agent unit missing / inactive | `sudo systemctl start sentinel-agent` |
 | no telemetry ever | compare hub/agent key, then `journalctl -u sentinel-agent -n 80` |
-| telemetry stopped | look at the last agent lines (crash loop, key, network) |
+| telemetry stopped | read the last agent lines (crash loop, key, network) |
 | missing BTF | boot a kernel with `CONFIG_DEBUG_INFO_BTF=y` |
 | **tracefs not mounted** | `sudo mount -t tracefs tracefs /sys/kernel/tracing` |
 | BPF LSM not active | boot with `lsm=...,bpf` (enforcement degraded otherwise) |
 | state DB not writable | `sudo chown -R sentinel:sentinel /var/lib/sentinel` |
 
-The same diagnosis is available from the palette (*Run troubleshooting
-diagnostics*) and as `GET /api/v1/diagnostics`.
+Same diagnosis from the palette (*Run troubleshooting diagnostics*) or
+`GET /api/v1/diagnostics`.
 </details>
 
 <details>
@@ -226,27 +238,25 @@ diagnostics*) and as `GET /api/v1/diagnostics`.
 sudo python3 tools/verify_enforcement.py
 ```
 
-It switches to enforce, runs a process matching a KILL rule, asserts it dies by
-**SIGKILL**, asserts the hub recorded the kill, then confirms the same process
-**survives in learn mode**. The original mode is restored.
+Switches to enforce, runs a process matching a KILL rule, asserts **SIGKILL**,
+asserts the hub recorded the kill, then confirms the same process **survives in
+learn mode**. The original mode is restored.
 </details>
 
 <details>
 <summary><b>Update in place</b></summary>
 
-From the console: `Ctrl+K` → *Install updates from git*. The updater fetches,
-builds into a staging copy, boots it on a spare port, gates on `/health`, then
-swaps and reloads gunicorn — the old version keeps serving until the new one
-answers.
+`Ctrl` `K` → *Install updates from git*. The updater fetches, builds into a
+staging copy, boots it on a spare port, gates on `/health`, then swaps and
+reloads gunicorn — the old version serves until the new one answers.
 
 ```bash
 cat /var/lib/sentinel/update.json        # state + step
 sudo journalctl -u sentinel-update -f    # live log
 ```
 
-Manual: `git pull && sudo ./install.sh`. The updater ref is
-`SENTINEL_UPDATE_REF`; pin it to a tag in production (see
-[docs/SECURITY.md](docs/SECURITY.md)).
+Updates verify tag/commit signatures by default (see
+[Verified releases](#verified-releases)). Manual: `git pull && sudo ./install.sh`.
 </details>
 
 ## Verified releases
@@ -258,19 +268,16 @@ Manual: `git pull && sudo ./install.sh`. The updater ref is
 SHA256:5wCBDa/K3kXd1qsYl6CT/YXcmw6jorMjwOgOOZUO5YU
 ```
 
-- `install.sh` writes `/etc/sentinel/allowed_signers` and points git at it
-  (`gpg.ssh.allowedSignersFile`).
-- With `SENTINEL_UPDATE_VERIFY=1` (the default) the updater runs
-  `git verify-tag`/`git verify-commit` and **aborts before building** an
-  unsigned ref.
-- Installing from a branch prints an explicit warning and sets verification off
-  so updates keep working — but that install has no trust chain. Install from
+- `install.sh` writes `/etc/sentinel/allowed_signers` and points git at it.
+- With `SENTINEL_UPDATE_VERIFY=1` (default) the updater runs `git verify-tag` /
+  `git verify-commit` and **aborts before building** an unsigned ref.
+- Branch installs print an explicit warning and run unverified — install from
   the tag for production.
-- Compare the fingerprint above out of band (this README, the repo release
-  notes) before trusting a download.
+- Compare the fingerprint out of band before trusting a download.
 
-The signing key was generated on the maintainer's build host; rotate it to an
-offline key before a GA release.
+> [!WARNING]
+> The alpha signing key was generated on the maintainer's build host. Rotate it
+> to an offline key before a GA release.
 
 ## Security model
 
@@ -281,14 +288,12 @@ offline key before a GA release.
   alone cannot change policy.
 - Browser sessions are HMAC-signed (absolute + idle expiry, sliding refresh),
   revoked server-side on logout; admin writes need a CSRF token.
-- Passwords: scrypt (N=2^15, r=8, p=1) with parameters stored per hash and an
-  upgrade path for legacy hashes.
+- Passwords: scrypt (N=2^15, r=8, p=1), parameters stored per hash, legacy
+  upgrade path.
 - Login: exponential lockout per IP, constant-cost unknown-user path.
-- TLS: the hub speaks HTTP and binds localhost by default. Put it behind a
-  reverse proxy with TLS before exposing it to a network; see
-  [docs/SECURITY.md](docs/SECURITY.md).
-- The self-updater runs as root and fetches git. Pin to a release tag and verify
-  tags/commits with `SENTINEL_UPDATE_VERIFY` before enabling it in production.
+- TLS: hub speaks HTTP and binds localhost. Terminate TLS in front of it and set
+  `SENTINEL_TRUST_PROXY=1`; see [docs/SECURITY.md](docs/SECURITY.md).
+- The updater runs as root and fetches git: keep it pinned to a signed tag.
 </details>
 
 ## Configuration
@@ -299,10 +304,10 @@ offline key before a GA release.
 `/etc/sentinel/sentinel.env` (root, mode 600):
 
 | Variable | Purpose |
-|---|---|
+| :--- | :--- |
 | `SENTINEL_PORT` | hub port (default 5000) |
 | `SENTINEL_BIND` | bind address (default 127.0.0.1) |
-| `SENTINEL_DB_PATH` | SQLite state (default `/var/lib/sentinel/sentinel.db`) |
+| `SENTINEL_DB_PATH` | SQLite state |
 | `SENTINEL_CONFIG` | rules file |
 | `SENTINEL_COLLECTOR_URL` | agent → hub telemetry URL |
 | `SENTINEL_AGENT_KEY` | shared agent key |
@@ -310,10 +315,8 @@ offline key before a GA release.
 | `SENTINEL_ALLOWLIST_KEY` | signed allowlist key |
 | `SENTINEL_ADMIN_USER` / `SENTINEL_ADMIN_PASSWORD` | dashboard credentials |
 | `SENTINEL_UPDATE_REF` | git ref the updater tracks (pin to a tag) |
-| `SENTINEL_UPDATE_REPO` | git remote for updates |
-| `SENTINEL_UPDATE_PORT` | spare port used to verify staged builds |
-| `SENTINEL_TRUST_PROXY` | set `1` behind a reverse proxy so lockout keys on `X-Forwarded-For` |
-| `SENTINEL_UPDATE_VERIFY` | `1` = require a valid git tag/commit signature before the staged build runs |
+| `SENTINEL_UPDATE_VERIFY` | `1` = require valid tag/commit signature |
+| `SENTINEL_TRUST_PROXY` | `1` behind a reverse proxy (real client IP) |
 </details>
 
 ## API
@@ -322,7 +325,7 @@ offline key before a GA release.
 <summary><b>Endpoints</b></summary>
 
 | Method | Path | Purpose |
-|---|---|---|
+| :--- | :--- | :--- |
 | POST | `/api/v1/login` | session cookie + CSRF |
 | POST | `/api/v1/logout` | revoke session |
 | GET | `/api/v1/stats` | aggregate counters |
@@ -330,12 +333,22 @@ offline key before a GA release.
 | GET | `/api/v1/telemetry` | recent events |
 | POST | `/api/v1/telemetry` | agent ingest (`X-Sentinel-Key`) |
 | GET | `/api/v1/diagnostics` | ingest-path diagnosis |
-| POST | `/api/v1/lineage/<id>/block` | block lineage (session + CSRF) |
+| POST | `/api/v1/lineage/<id>/block` | block lineage |
 | POST | `/api/v1/lineage/<id>/trust` | trust lineage |
-| GET/POST | `/api/v1/mode` | good learn/enforce |
-| GET/POST | `/api/v1/system/update` | update status / start staged update |
-| GET | `/health` | liveness for the staged cutover |
+| GET/POST | `/api/v1/mode` | read / set learn ⇄ enforce |
+| GET/POST | `/api/v1/system/update` | status / staged update |
+| GET | `/health` | liveness for the cutover |
 </details>
+
+## Tested on
+
+| Platform | Kernel | Sensor | Enforcement |
+| :--- | :--- | :--- | :--- |
+| Ubuntu 24.04.5 (QEMU, TCG) | 6.8.0-147, BTF | verifier loads all programs (no `lsm=bpf` in that guest) | not exercised there |
+| Arch Linux x86_64 | rolling, BTF, BPF LSM | attaches once tracefs is mounted | run `tools/verify_enforcement.py` |
+
+Enforcement is verified per kernel with `tools/verify_enforcement.py`. A failure
+on one distro is expected alpha behavior — better listed than discovered.
 
 ## Development
 
@@ -346,28 +359,17 @@ node --check collector/dashboard.js # console module
 bash -n install.sh
 ```
 
-Design decisions for the console live in [DESIGN.md](DESIGN.md); product context
-in [PRODUCT.md](PRODUCT.md); operations and security notes in
-[docs/OPERATIONS.md](docs/OPERATIONS.md) and [docs/SECURITY.md](docs/SECURITY.md).
-
-## Tested on
-
-| Platform | Kernel | Sensor | Enforcement |
-|---|---|---|---|
-| Ubuntu 24.04.5 (QEMU, TCG) | 6.8.0-147-generic, BTF | verifier loads all programs (`no lsm=bpf` in that guest) | not exercised there |
-| Arch Linux (x86_64) | rolling, BTF, BPF LSM | attaches once tracefs is mounted | run `tools/verify_enforcement.py` |
-
-Enforcement kills are verified by `tools/verify_enforcement.py`; add your own
-distro/kernel row when you run it. A failure on one distro is expected alpha
-behavior — better listed than discovered.
+Design decisions: [DESIGN.md](DESIGN.md) · product context: [PRODUCT.md](PRODUCT.md) ·
+operations: [docs/OPERATIONS.md](docs/OPERATIONS.md) · security: [docs/SECURITY.md](docs/SECURITY.md).
 
 ## Status
 
-Alpha, and honest about it: enforcement depends on your kernel's BTF/LSM/tracefs,
-rules need tuning per host, and the updater's trust model assumes you pin a
-release tag. The pieces that make it usable — learn mode, trust lists,
-diagnostics, staged updates, a calm console — are there so alpha is not another
-word for "sharp edges everywhere".
+> [!CAUTION]
+> **Alpha.** Enforcement depends on your kernel's BTF/LSM/tracefs, rules need
+> tuning per host, and the update trust chain assumes you install from a signed
+> tag. The pieces that make it usable — learn mode, trust lists, diagnostics,
+> staged updates, a calm console — exist so alpha is not another word for sharp
+> edges everywhere.
 
 ## License
 

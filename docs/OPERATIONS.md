@@ -1,60 +1,88 @@
+<div align="center">
+
 # Operations guide
 
-How to run SENTINEL day to day: read the console, decide on a lineage, keep the
-sensor healthy. For installation see [README](../README.md); for secrets and
-trust boundaries see [SECURITY.md](SECURITY.md).
+**Run SENTINEL without guessing.** Triage, decide on a lineage, keep the sensor healthy.
 
-## What the console is for
+[README](../README.md) · [Security](SECURITY.md) · [Console design](../DESIGN.md)
 
-Three tasks, in order of frequency:
+</div>
 
-1. **Triage** — scan the feed and notice the event that matters (seconds).
-2. **Investigate** — open that event's lineage and understand the chain.
-3. **Respond** — block, trust, or export, and know what happened afterwards.
+---
 
-Everything is designed around the lineage id, which is stable and printed on
-every event.
+## The console in one loop
 
-## Lineage model
+```mermaid
+flowchart LR
+    T["Triage<br/>scan the feed"] --> I["Investigate<br/>open the lineage"]
+    I --> R["Respond<br/>block · trust · export"]
+    R --> V["Verify<br/>counters + audit"]
+    V --> T
+```
 
-A lineage is created when a process starts with no tracked parent (a login
-shell, a service, a container entrypoint). Every descendant joins the same
-lineage. The hub keeps the tree (`nodes`, `root_pid`, `first_seen`,
-`last_seen`, `threat_count`, `host`, `blocked`, `trusted`).
+| Task | Frequency | Question answered |
+| :--- | :--- | :--- |
+| **Triage** | constant | *Is anything wrong right now?* |
+| **Investigate** | per alert | *What ran, from where, under which ancestry?* |
+| **Respond** | per incident | *Do I stop it, allow it, or keep evidence?* |
+
+> [!TIP]
+> Everything is keyed on the **lineage id**, which is printed on every event and
+> stable for the life of the process tree. Learn to read it and the console
+> becomes one screen instead of five.
+
+## Lineage lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> monitoring : root process starts
+    monitoring --> stable : clean for 10 min
+    monitoring --> threat : rule matches
+    stable --> threat : rule matches
+    threat --> trusted : operator trusts
+    threat --> blocked : KILL or operator block
+    trusted --> [*] : tree exits
+    blocked --> [*] : tree killed
+    stable --> [*] : tree exits
+```
 
 | State | Shown as | What it means |
-|---|---|---|
+| :--- | :--- | :--- |
 | monitoring | `monitoring` | seen, no threat, younger than 10 minutes |
 | stable | `stable` | seen, no threat, alive longer than 10 minutes |
 | threat | `N threats` | at least one rule matched in this tree |
-| trusted | `trusted` | operator allowlisted it; alerts suppressed |
+| trusted | `trusted` | allowlisted; alerts suppressed |
 | blocked | `blocked` | killed and refused in the kernel; survives restarts |
 
-States are derived, not stored: threat > blocked > trusted > stable/monitoring.
-Stability exists so a healthy box does not look suspicious just because it has
-lineages open.
+States are derived, not stored: `threat > blocked > trusted > stable/monitoring`.
+Stability exists so a healthy host doesn't look suspicious merely because it has
+long-lived processes.
 
 ## Operations
 
 | Action | Where | Effect |
-|---|---|---|
-| Block | inspector, right-click, palette | intent to hub, command to agent, SIGKILL whole tree; persisted |
-| Trust | same | suppress alerts for the lineage/binary; never kills |
-| Inspect | click a row / `Enter` | process tree, events, MITRE, facts |
-| Export | `E` or palette | JSON of the currently filtered events |
-| Mode | header pill / palette | learn (log only) ⇄ enforce (kill) |
-| Diagnostics | empty state, palette | why is the pipeline not delivering |
-| Update | palette | staged build + health gate + zero-downtime swap |
+| :--- | :--- | :--- |
+| **Block** | inspector, right-click, palette | intent to hub → command to agent → SIGKILL whole tree; persisted |
+| **Trust** | same | suppress alerts for the lineage/binary; never kills |
+| **Inspect** | click row / `Enter` | process tree, events, MITRE, facts |
+| **Export** | `E` or palette | JSON of currently filtered events |
+| **Mode** | header pill / palette | learn (log only) ⇄ enforce (kill) |
+| **Diagnostics** | empty state, palette | why is the pipeline not delivering |
+| **Update** | palette | staged build, health gate, zero-downtime swap |
 
-Every admin action is written to the audit table with the operator and time.
+Every admin action lands in the audit table with operator and time.
 
 ## Playbooks
 
 ### Empty or frozen feed
 
-The console diagnoses it: unit state, telemetry age, kernel BTF/tracefs/LSM,
-agent key, DB writability. Follow the first failing check; copy the command.
-Manually: `sudo journalctl -u sentinel-agent -n 80 --no-pager`.
+The console diagnoses it automatically: unit state, telemetry age, kernel
+BTF/tracefs/LSM, agent key, DB writability. Follow the first failing check and
+copy its command.
+
+```bash
+sudo journalctl -u sentinel-agent -n 80 --no-pager
+```
 
 ### Agent restart loop
 
@@ -66,15 +94,16 @@ sudo mount -t tracefs tracefs /sys/kernel/tracing
 sudo systemctl restart sentinel-agent
 ```
 
-A restart counter climbing in `systemctl status` confirms it. The loader now
-names the exact programs that failed.
+> [!NOTE]
+> The loader now prints the exact programs that failed to attach, so the log
+> names the cause instead of a generic error.
 
 ### Sudden mass of alerts
 
 1. Switch to **learn** (stops kills while you investigate).
-2. Check the rule ids in the feed; one rule usually dominates.
-3. If benign: trust the lineage (fast) or fix the rule pattern (better).
-4. If real: block the root lineage, then export the evidence.
+2. Group by rule id in the feed; one rule usually dominates.
+3. Benign → **trust the lineage** (fast) or fix the rule pattern (better).
+4. Real → **block the root lineage**, then **export** the evidence.
 
 ### Enforcement verification
 
@@ -82,38 +111,41 @@ names the exact programs that failed.
 sudo python3 tools/verify_enforcement.py
 ```
 
-Runs the kill-switch test in both modes and restores your mode. Do it after
-kernel upgrades, rule-pack changes, or updates.
+> [!IMPORTANT]
+> Do this after kernel upgrades, rule-pack changes and updates. Expect
+> `4 passed, 0 failed` with the SIGKILL check returning `rc=-9`.
 
 ### Updating and rollback
 
-Updates stage into `/opt/sentinel.staging`, boot on `PORT+1`, must pass
-`/health`, then swap and reload. The old release keeps serving until the new one
-answers, so a failed update is a no-op. Rollback = reinstall the previous tag
-with `git checkout <tag> && sudo ./install.sh`.
+The updater stages into `/opt/sentinel.staging`, boots on `PORT+1`, must pass
+`/health`, then swaps and reloads. The old release serves until the new one
+answers, so a failed update is a no-op.
+
+Rollback: `git checkout <previous-tag> && sudo ./install.sh`.
 
 ### Backup
 
-Only two things matter:
-- `/etc/sentinel/` (env file: keys + password)
-- `/var/lib/sentinel/sentinel.db` (users, audit, lineages)
+```bash
+sqlite3 /var/lib/sentinel/sentinel.db ".backup /backup/sentinel.db"   # safe live
+sudo tar -C /etc -czf /backup/sentinel-etc.tgz sentinel/
+```
 
-`sqlite3 /var/lib/sentinel/sentinel.db ".backup /backup/sentinel.db"` is safe
-while the hub runs.
+That is the whole state: **env file** (keys + password) and **the DB** (users,
+audit, lineages).
 
 ## Metrics to watch
 
 | Signal | Healthy | Act when |
-|---|---|---|
+| :--- | :--- | :--- |
 | agent `Stats: exec=` | climbs with host activity | flat for hours on a busy host |
-| `killed_processes` | only rises on real detections | rises without alerts (rule too broad) |
-| telemetry age | < 5 min | > 5 min → diagnostics |
+| `killed_processes` | only on real detections | rises without alerts → rule too broad |
+| telemetry age | < 5 min | > 5 min → run diagnostics |
 | restart counter | stable | climbing → loader/attach problem |
-| disk free on `/var/lib` | > 200 MB | below → prune/rotate DB |
+| disk free on `/var/lib` | > 200 MB | below → prune or rotate the DB |
 
 ## Scaling and retention
 
 Single-node is the default (in-memory + SQLite). Set `SENTINEL_REDIS_URL` to
-share state across multiple gunicorn workers or a second hub; telemetry is capped
-in memory and rotated on disk. There is no built-in retention policy for the
-SQLite store yet — monitor its size if you keep months of history.
+share state across gunicorn workers or a second hub. Telemetry is capped in
+memory and rotated on disk; there is no automatic SQLite retention policy yet —
+watch its size if you keep months of history.
