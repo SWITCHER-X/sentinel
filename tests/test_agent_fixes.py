@@ -64,7 +64,7 @@ def test_kill_skips_recycled_pid():
     _reset()
     e = _mk(4242, 0x10, start=111)
     sent = []
-    with _Patch(_start_time=lambda pid: 222, **{"os": types.SimpleNamespace(kill=lambda p, s: sent.append(p), environ=os.environ, path=os.path, getpid=os.getpid)}):
+    with _Patch(_start_time=lambda pid: 222, **{"os": types.SimpleNamespace(kill=lambda p, s: sent.append(p), environ=os.environ, path=os.path, getpid=os.getpid, readlink=lambda p: "")}):
         assert A._kill_if_same_process(4242, e) is False
     assert sent == [], "a recycled PID must never be signalled"
     assert not e.flags & A.LF_KILLED
@@ -74,7 +74,7 @@ def test_kill_hits_the_real_process():
     _reset()
     e = _mk(4242, 0x10, start=111)
     sent = []
-    fake_os = types.SimpleNamespace(kill=lambda p, s: sent.append((p, s)), environ=os.environ, path=os.path, getpid=os.getpid)
+    fake_os = types.SimpleNamespace(kill=lambda p, s: sent.append((p, s)), environ=os.environ, path=os.path, getpid=os.getpid, readlink=lambda p: "")
     with _Patch(_start_time=lambda pid: 111, os=fake_os):
         assert A._kill_if_same_process(4242, e) is True
     assert sent == [(4242, signal.SIGKILL)]
@@ -85,7 +85,7 @@ def test_kill_skips_entry_without_start_time():
     _reset()
     e = _mk(4242, 0x10, start=0)
     sent = []
-    fake_os = types.SimpleNamespace(kill=lambda p, s: sent.append(p), environ=os.environ, path=os.path, getpid=os.getpid)
+    fake_os = types.SimpleNamespace(kill=lambda p, s: sent.append(p), environ=os.environ, path=os.path, getpid=os.getpid, readlink=lambda p: "")
     with _Patch(_start_time=lambda pid: 999, os=fake_os):
         assert A._kill_if_same_process(4242, e) is False
     assert sent == []
@@ -95,7 +95,7 @@ def test_protected_process_is_never_killed():
     _reset()
     e = _mk(1, 0x10, start=111)
     sent = []
-    fake_os = types.SimpleNamespace(kill=lambda p, s: sent.append(p), environ=os.environ, path=os.path, getpid=os.getpid)
+    fake_os = types.SimpleNamespace(kill=lambda p, s: sent.append(p), environ=os.environ, path=os.path, getpid=os.getpid, readlink=lambda p: "")
     with _Patch(_start_time=lambda pid: 111, os=fake_os):
         assert A._kill_if_same_process(1, e) is False
     assert sent == [], "PID 1 must never be signalled"
@@ -107,7 +107,7 @@ def test_dry_run_never_kills_or_blocks():
     _reset()
     _mk(4242, 0x10, start=111)
     sent = []
-    fake_os = types.SimpleNamespace(kill=lambda p, s: sent.append(p), environ=os.environ, path=os.path, getpid=os.getpid)
+    fake_os = types.SimpleNamespace(kill=lambda p, s: sent.append(p), environ=os.environ, path=os.path, getpid=os.getpid, readlink=lambda p: "")
     with _Patch(_start_time=lambda pid: 111, os=fake_os, DRY_RUN=True, loader=None):
         assert A._kill_if_same_process(4242, A.lineage_tree[4242]) is False
         A.block_lineage(0x10, A.Rule(id=0, name="t", pattern=""))
@@ -121,7 +121,7 @@ def test_block_subtree_does_not_kill_recycled_descendant():
     _mk(101, 0x2, 0x1, 100, start=5)
     _mk(102, 0x3, 0x2, 101, start=5)      # this PID was recycled below
     sent = []
-    fake_os = types.SimpleNamespace(kill=lambda p, s: sent.append(p), environ=os.environ, path=os.path, getpid=os.getpid)
+    fake_os = types.SimpleNamespace(kill=lambda p, s: sent.append(p), environ=os.environ, path=os.path, getpid=os.getpid, readlink=lambda p: "")
     start = {100: 5, 101: 5, 102: 99}
     with _Patch(_start_time=lambda pid: start.get(pid, 0), os=fake_os, loader=None):
         A.block_lineage(0x1, A.Rule(id=0, name="t", pattern=""))
@@ -183,6 +183,8 @@ if __name__ == "__main__":
     test_kill_skips_recycled_pid()
     test_kill_hits_the_real_process()
     test_kill_skips_entry_without_start_time()
+    test_protected_process_is_never_killed()
+    test_dry_run_never_kills_or_blocks()
     test_block_subtree_does_not_kill_recycled_descendant()
     test_hash_binary_sees_a_replaced_file()
     test_sweep_marks_exits_then_evicts_and_prunes_children()

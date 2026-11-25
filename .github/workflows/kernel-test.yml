@@ -8,6 +8,28 @@ on:
   workflow_dispatch:
 
 jobs:
+  unit-tests:
+    name: Python unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: python -m pip install --upgrade pip -r requirements.txt
+
+      - name: Run test suites
+        run: make test
+
   kernel-test:
     name: Load eBPF on Ubuntu 24.04 kernel
     runs-on: ubuntu-24.04

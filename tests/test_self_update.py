@@ -154,22 +154,14 @@ def test_signature_failure_aborts_update(monkeypatch):
     raise AssertionError("unsigned commit must not pass verification")
 
 
-def test_verify_defaults_to_fail_closed():
+def test_verify_defaults_to_fail_closed(monkeypatch):
     """An unset switch must mean 'require signatures', not 'skip them'."""
-    import os
-    import subprocess
+    import importlib
 
-    env = {k: v for k, v in os.environ.items() if k != "SENTINEL_UPDATE_VERIFY"}
-    tools = Path(__file__).resolve().parent.parent / "tools"
-    code = (
-        "import sys;"
-        f"sys.path.insert(0, {str(tools)!r});"
-        "import self_update;"
-        "print(self_update.VERIFY)"
-    )
-    out = subprocess.run([sys.executable, "-c", code], capture_output=True,
-                         text=True, env=env, timeout=30).stdout.strip()
-    assert out == "True"
+    monkeypatch.delenv("SENTINEL_UPDATE_VERIFY", raising=False)
+    reloaded = importlib.reload(su)
+    assert reloaded.VERIFY is True
+    monkeypatch.undo()
 
 
 def test_unsigned_update_aborts_before_build(tmp_path, monkeypatch):

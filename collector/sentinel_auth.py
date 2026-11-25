@@ -106,6 +106,29 @@ def db():
     return conn
 
 
+_LAST_PRUNE = 0.0
+
+
+def maybe_prune_events():
+    """Delete events older than SENTINEL_RETENTION_DAYS (default 30, 0 = keep
+    forever). Cheap: runs at most once an hour, called from ingestion."""
+    global _LAST_PRUNE
+    now = time.time()
+    if now - _LAST_PRUNE < 3600:
+        return
+    _LAST_PRUNE = now
+    try:
+        days = float(os.environ.get("SENTINEL_RETENTION_DAYS", "30"))
+    except ValueError:
+        days = 30.0
+    if days <= 0:
+        return
+    c = db()
+    c.execute("DELETE FROM events WHERE ts < ?", (now - days * 86400,))
+    c.commit()
+    c.close()
+
+
 def meta_get(key, default=None):
     row = db().execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
     return row["value"] if row else default

@@ -8,7 +8,7 @@ metadata:
 rules:
 - id: 1001
   name: Reverse Shell - nc -e
-  pattern: nc\s+-e
+  pattern: '(?:^|[\s/])nc\s+-e(?:[\s/]|$)'
   action: KILL
   severity: CRITICAL
   mitre:
@@ -19,7 +19,7 @@ rules:
   flags: 3
 - id: 1002
   name: Reverse Shell - bash -i
-  pattern: bash\s+-i
+  pattern: 'bash\s+-i(?:\s+\d*)?\s*[<>&]'
   action: KILL
   severity: CRITICAL
   mitre:
@@ -137,7 +137,7 @@ rules:
   flags: 3
 - id: 2005
   name: Python One-Liner Download Execute
-  pattern: python.*(-c|--command).*urllib|requests.*http.*exec|eval
+  pattern: 'python\S*\s+(?:-c|--command)\s+(?:.*(?:urllib|requests).*(?:exec|eval)\s*\(|.*(?:exec|eval)\s*\(.*(?:urllib|requests))'
   action: KILL
   severity: CRITICAL
   mitre:
@@ -150,7 +150,7 @@ rules:
 - id: 2006
   name: Node.js One-Liner Download Execute
   binary_pattern: (node|nodejs)
-  pattern: (require\(.*http|fetch|axios).*eval|Function\(.*\)
+  pattern: '(?:require\(.*http|fetch|axios).*(?:\beval\b|Function\()'
   action: KILL
   severity: CRITICAL
   mitre:
@@ -162,7 +162,7 @@ rules:
   flags: 5
 - id: 3001
   name: Shadow File Access
-  pattern: (cat|cp|dd|strings|grep|awk|sed|cut).*shadow
+  pattern: '(?:^|[\s/])(?:cat|cp|dd|strings|e?grep|f?grep|[gm]?awk|sed|cut)\s(?:.*[\s=])?/etc/(?:[^/\s]+/|/)?(?:[^/\s]+/|/)?(?:[^/\s]+/|/)?(?:[^/\s]+/|/)?g?shadow(?:[._\-]\S*)?(?:[\s;|&<>)"'']|$)'
   action: KILL
   severity: CRITICAL
   mitre:
@@ -579,9 +579,9 @@ rules:
   flags: 4
 - id: 11001
   name: Ransomware - File Encryption
-  binary_pattern: (gpg|openssl|ccrypt|age|sops|7z|rar|zip|tar)
-  pattern: (-e|-c|--encrypt|--password|-p)
-  action: KILL
+  binary_pattern: (gpg|openssl|ccrypt|age|sops)
+  pattern: '(?:^|\s)(?:--encrypt|--symmetric|--password|-c|-e)(?:\s|$)|(?:^|\s)-[ce][A-Za-z]{0,2}(?:\s|$)|(?:^|\s)enc(?!.*(?:\s|^)-d(?:\s|$))(?:\s|$)'
+  action: ALERT
   severity: CRITICAL
   mitre:
   - T1486

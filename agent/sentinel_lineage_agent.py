@@ -363,6 +363,121 @@ def is_protected(pid: int, entry=None) -> bool:
         return True
     return entry is not None and entry.comm in PROTECTED_COMMS
 
+
+# Package managers spawn helpers (gpg, tar, curl, hooks) that look like attacks
+# out of context. Anything below one of these binaries is never killed or
+# blocked: it is logged instead. Matched by exact binary path, not comm, so a
+# renamed process cannot claim protection without write access to /usr/bin.
+PROTECTED_TREES = {p.strip() for p in os.getenv(
+    "SENTINEL_PROTECTED_TREES",
+    "/usr/bin/pacman,/usr/bin/pacman-key,/usr/bin/makepkg,/usr/bin/yay,"
+    "/usr/bin/paru,/usr/bin/apt,/usr/bin/apt-get,/usr/bin/dpkg,"
+    "/usr/bin/dnf,/usr/bin/rpm,/usr/bin/zypper").split(",") if p.strip()}
+
+# /bin and /sbin are symlinks to /usr/bin on merged-usr systems, and a process
+# can be exec'd through either spelling (or with ".." inside the path).
+_USR_ALIASES = (("/bin/", "/usr/bin/"), ("/sbin/", "/usr/bin/"))
+
+
+def _protected_binary(path: str) -> bool:
+    """True if `path` names a package manager (exact path, no comm guessing).
+
+    Paths are normalised (realpath + merged-usr /bin,/sbin aliases) so that
+    `/bin/apt-get` and `/usr/bin/../bin/pacman` are recognised, while a renamed
+    binary in /tmp is not.
+    """
+    if not path:
+        return False
+    if path in PROTECTED_TREES:
+        return True
+    try:
+        real = os.path.realpath(path)
+    except OSError:
+        return False
+    if real in PROTECTED_TREES:
+        return True
+    for alias, target in _USR_ALIASES:
+        if real.startswith(alias) and target + real[len(alias):] in PROTECTED_TREES:
+            return True
+        if real.startswith(target) and alias + real[len(target):] in PROTECTED_TREES:
+            return True
+    return False
+
+
+def _proc_exe(pid: int) -> str:
+    try:
+        return os.readlink(f"/proc/{pid}/exe")
+    except OSError:
+        return ""
+
+
+def _proc_ppid(pid: int) -> int:
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return int(f.read().rsplit(")", 1)[1].split()[1])
+    except (OSError, IndexError, ValueError):
+        return 0
+
+
+def _in_protected_tree(entry) -> bool:
+    """True if the entry or any ancestor is a protected package manager.
+
+    Walks the live lineage tree first, then falls back to /proc: after an agent
+    restart (or a dropped fork/exec event) the ancestor entry is missing, and a
+    package-manager descendant must still never be enforced.
+    """
+    seen, cur, hops = set(), entry, 0
+    while cur is not None and hops < 64:
+        pid = getattr(cur, "pid", 0) or 0
+        if pid in seen:
+            break
+        seen.add(pid)
+        if _protected_binary(getattr(cur, "binary_path", "")):
+            return True
+        cur = lineage_tree.get(getattr(cur, "ppid", 0) or 0)
+        hops += 1
+
+    # Incomplete lineage tree: walk the real process ancestry instead.
+    pid, seen_live, hops = getattr(entry, "pid", 0) or 0, set(), 0
+    while pid and pid not in seen_live and hops < 64:
+        seen_live.add(pid)
+        if _protected_binary(_proc_exe(pid)):
+            return True
+        pid = _proc_ppid(pid)
+        hops += 1
+    return False
+
+
+_QUOTED = r'(?:"[^"]*"|\'[^\']*\'|\S+)'
+
+_SECRET_RES = [
+    # --password=hunter2 / --pass hunter2 / --token=... (quoted values too)
+    (re.compile(r"(?i)(--?(?:password|passwd|pass|token|secret|secret[-_]?key|api[-_]?key|auth)[= ]+)" + _QUOTED), r"\1[REDACTED]"),
+    # Authorization: Bearer <tok> (before the generic key=value rule)
+    (re.compile(r"(?i)(authorization:\s*(?:bearer|basic|token)\s+)" + _QUOTED), r"\1[REDACTED]"),
+    # scheme://user:pass@host
+    (re.compile(r"(://[^/\s:@]+:)[^@\s/]+@"), r"\1[REDACTED]@"),
+    # curl -u user:pass / --user user:pass (attached -uuser:pass too)
+    (re.compile(r"(?i)((?:^|\s)(?:-u|--user)(?:[= ]*)[^\s:]+:)" + _QUOTED), r"\1[REDACTED]"),
+    # -phunter2 (mysql/docker) but keep -p 2222 / -p tcp / -p 8080:80
+    (re.compile(r"(?i)((?:^|\s)-p(?:\s+)?)(?!(?:tcp|udp|icmp|icmpv6|sctp|\d{1,5}(?::\d{1,5})?)(?:\s|$))" + _QUOTED), r"\1[REDACTED]"),
+    # password=hunter2, X-Api-Key: ..., access_token=..., client_secret=...
+    (re.compile(r"(?i)((?:^|[\s\"'\-,;_])(?:password|passwd|pass|token|secret|api[-_]?key|apikey|"
+                r"access[-_]?key|client[-_]?secret|credential)[\w.-]*\s*[:=]\s*)" + _QUOTED), r"\1[REDACTED]"),
+    # env-style SECRET=value (case-insensitive, any prefix/suffix)
+    (re.compile(r"(?i)\b([A-Z0-9_]*(?:password|passwd|token|secret|api_?key|access_key)[A-Z0-9_]*=)" + _QUOTED), r"\1[REDACTED]"),
+    # well-known key formats
+    (re.compile(r"\b(?:sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16})\b"), "[REDACTED]"),
+]
+
+
+def redact_cmdline(cmdline: str) -> str:
+    """Mask credentials before a command line leaves the host (rules still
+    match against the raw command line)."""
+    for rx, rep in _SECRET_RES:
+        cmdline = rx.sub(rep, cmdline)
+    return cmdline
+
 # Eviction config
 LINEAGE_TREE_MAX = int(os.environ.get("SENTINEL_LINEAGE_MAX", "100000"))
 LINEAGE_BY_ID_MAX = int(os.environ.get("SENTINEL_LINEAGE_BY_ID_MAX", "200000"))
@@ -924,15 +1039,13 @@ def handle_exec_event(event_dict: dict):
                 "parent_lineage_id": parent_lineage_id,
                 "comm": comm,
                 "binary_path": binary_path,
-                "cmdline": entry.cmdline,
+                "cmdline": redact_cmdline(entry.cmdline),
                 "killed": False,
                 "action": rule.action,
                 "timestamp": time.time()
             }
 
             entry.alerts.append(alert)
-            telemetry_buffer.append(alert)
-            dispatch_telemetry(alert)
 
             with stats_lock:
                 stats["alerts"] += 1
@@ -951,12 +1064,22 @@ def handle_exec_event(event_dict: dict):
                 alert["tags"] = list(set((alert.get("tags") or []) + ["trusted-binary"]))
                 entry.alerts[-1]["action"] = "LOG"
                 print(f"[-] TRUSTED BINARY (no enforcement): {rule.name} -> PID {pid} ({binary_path})")
+            elif rule.action in ("KILL", "BLOCK", "QUARANTINE") and _in_protected_tree(entry):
+                alert["action"] = "LOG"
+                alert["tags"] = list(set((alert.get("tags") or []) + ["package-manager-tree"]))
+                entry.alerts[-1]["action"] = "LOG"
+                print(f"[-] PACKAGE MANAGER TREE (no enforcement): {rule.name} (ID:{rule.id}) -> PID {pid} ({binary_path})")
             elif rule.action == "KILL":
                 kill_process(pid, entry, rule)
             elif rule.action == "BLOCK":
                 block_lineage(lineage_id, rule)
             elif rule.action == "QUARANTINE":
                 quarantine_lineage(lineage_id, entry, rule)
+
+            # Dispatch only after the action/tags are final, so telemetry never
+            # reports KILL for something we deliberately logged instead.
+            telemetry_buffer.append(alert)
+            dispatch_telemetry(alert)
 
             print(f"[!] RULE MATCH: {rule.name} (ID:{rule.id}) -> PID {pid} ({comm}) Lineage:{lineage_id:#x}")
             break
@@ -974,7 +1097,7 @@ def handle_exec_event(event_dict: dict):
             "parent_lineage_id": parent_lineage_id,
             "comm": comm,
             "binary_path": binary_path,
-            "cmdline": entry.cmdline,
+            "cmdline": redact_cmdline(entry.cmdline),
             "killed": False,
             "action": "LOG",
             "timestamp": time.time()
@@ -1114,7 +1237,12 @@ def kill_process(pid: int, entry: LineageEntry, rule: Rule):
         killed_pids = [pid]
         for child_pid in entry.children:
             child_entry = lineage_tree.get(child_pid)
-            if child_entry and _kill_if_same_process(child_pid, child_entry):
+            if child_entry is None:
+                continue
+            if _in_protected_tree(child_entry):
+                print(f"[-] PROTECTED TREE (skip kill): PID {child_pid} descends from a package manager")
+                continue
+            if _kill_if_same_process(child_pid, child_entry):
                 killed_pids.append(child_pid)
 
         # Block entire lineage
@@ -1123,7 +1251,8 @@ def kill_process(pid: int, entry: LineageEntry, rule: Rule):
         with stats_lock:
             stats["killed"] += 1 + len(killed_pids) - 1
 
-        print(f"[!] KILLED lineage {entry.lineage_id:#x}: PID {pid} + {len(killed_pids)-1} children")
+        print(f"[!] KILLED lineage {entry.lineage_id:#x}: PID {pid} + {len(killed_pids)-1} children "
+              f"| rule {rule.id} '{rule.name}' | {redact_cmdline(entry.cmdline)[:160]}")
 
     except Exception as e:
         print(f"[-] Kill failed: {e}")
@@ -1144,6 +1273,11 @@ def block_lineage(lineage_id: int, rule: Rule):
     """Block a lineage and all of its descendants (kernel map + live processes)."""
     global blocked_lineages
     ids = _lineage_subtree(lineage_id)
+    protected = {e.lineage_id for e in list(lineage_tree.values())
+                 if e.lineage_id in ids and _in_protected_tree(e)}
+    if protected:
+        ids -= protected
+        print(f"[-] PROTECTED TREE (skip block): {len(protected)} lineage(s) descend from a package manager")
     for lid in ids:
         blocked_lineages.add(lid)
         if DRY_RUN:

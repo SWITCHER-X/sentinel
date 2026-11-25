@@ -671,6 +671,7 @@ def telemetry():
                  json.dumps(data, default=str)))
             _c.commit()
             _c.close()
+            sa.maybe_prune_events()
         except Exception as _e:
             print(f"[-] event persist failed: {_e}", flush=True)
 

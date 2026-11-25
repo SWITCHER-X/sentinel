@@ -317,6 +317,8 @@ SHA256:5wCBDa/K3kXd1qsYl6CT/YXcmw6jorMjwOgOOZUO5YU
 | `SENTINEL_UPDATE_REF` | git ref the updater tracks (pin to a tag) |
 | `SENTINEL_UPDATE_VERIFY` | `1` = require valid tag/commit signature |
 | `SENTINEL_TRUST_PROXY` | `1` behind a reverse proxy (real client IP) |
+| `SENTINEL_RETENTION_DAYS` | event retention (default 30, `0` = keep forever) |
+| `SENTINEL_PROTECTED_TREES` | comma-separated package-manager binaries whose trees are never killed |
 </details>
 
 ## API

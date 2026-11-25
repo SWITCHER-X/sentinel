@@ -272,6 +272,14 @@ static volatile sig_atomic_t running = 1;
 
 static void on_sigterm(int sig) { (void)sig; running = 0; }
 
+/* Hooks the lineage tracker cannot work without. Everything else (network,
+ * file, LSM hooks) may fail to attach and the agent keeps running degraded. */
+static int is_critical_prog(const char *n) {
+    return !strcmp(n, "trace_execve") || !strcmp(n, "trace_execveat") ||
+           !strcmp(n, "trace_exit_execve") || !strcmp(n, "on_fork") ||
+           !strcmp(n, "trace_sched_exit");
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: %s <core.o>\n", argv[0]);
@@ -319,16 +327,24 @@ int main(int argc, char **argv) {
     }
 
     /* Attach programs */
-    int attached = 0;
+    int attached = 0, critical_failed = 0;
     char failed[160] = {0};
     bpf_object__for_each_program(prog, obj) {
         if (bpf_program__autoload(prog)) {
-            if (bpf_program__attach(prog) != NULL) {
+            const char *pname = bpf_program__name(prog);
+            /* libbpf <1.0 returns ERR_PTR on failure, >=1.0 returns NULL with
+             * errno set; libbpf_get_error() handles both conventions. */
+            struct bpf_link *link = bpf_program__attach(prog);
+            if (!libbpf_get_error(link)) {
                 attached++;
-            } else if (strlen(failed) < sizeof(failed) - 2) {
-                size_t used = strlen(failed);
-                snprintf(failed + used, sizeof(failed) - used, "%s%s",
-                         used ? "," : "", bpf_program__name(prog));
+            } else {
+                if (is_critical_prog(pname))
+                    critical_failed = 1;
+                if (strlen(failed) < sizeof(failed) - 2) {
+                    size_t used = strlen(failed);
+                    snprintf(failed + used, sizeof(failed) - used, "%s%s",
+                             used ? "," : "", pname);
+                }
             }
         }
     }
@@ -338,9 +354,13 @@ int main(int argc, char **argv) {
                  "not all programs attached (%d/%d); failed: %s "
                  "(is tracefs mounted at /sys/kernel/tracing?)",
                  attached, autoload_programs, failed[0] ? failed : "?");
-        print_error(msg);
-        bpf_object__close(obj);
-        return 1;
+        if (critical_failed) {
+            print_error(msg);
+            bpf_object__close(obj);
+            return 1;
+        }
+        /* Only optional hooks failed: keep running degraded. */
+        fprintf(stderr, "[!] degraded: %s\n", msg);
     }
 
     /* Open ring buffers */
