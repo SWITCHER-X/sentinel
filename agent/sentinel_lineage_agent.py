@@ -478,6 +478,92 @@ def redact_cmdline(cmdline: str) -> str:
         cmdline = rx.sub(rep, cmdline)
     return cmdline
 
+
+# ─── Kill reporting: append-only log + desktop notification ───
+KILL_LOG = os.getenv("SENTINEL_KILL_LOG", "/var/lib/sentinel/kills.log")
+NOTIFY_ENABLED = os.getenv("SENTINEL_NOTIFY", "1") == "1"
+_NOTIFY_MIN_GAP = float(os.getenv("SENTINEL_NOTIFY_GAP", "3"))
+_notify_last = 0.0
+_notify_lock = threading.Lock()
+
+
+def _log_kill(record: dict) -> None:
+    """One JSON object per line; `sentinel-kills` reads this file."""
+    try:
+        with open(KILL_LOG, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, separators=(",", ":")) + "\n")
+    except OSError as e:
+        print(f"[-] kill log write failed ({KILL_LOG}): {e}")
+
+
+def _desktop_sessions() -> List[Tuple[int, int, str, str]]:
+    """(uid, gid, home, bus_path) for every logged-in user with a session bus."""
+    import glob, pwd
+    out = []
+    for bus in glob.glob("/run/user/*/bus"):
+        try:
+            uid = int(bus.split("/")[3])
+            if uid == 0:
+                continue
+            pw = pwd.getpwuid(uid)
+            out.append((uid, pw.pw_gid, pw.pw_dir, bus))
+        except (ValueError, KeyError, IndexError):
+            continue
+    return out
+
+
+def _notify_escape(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _desktop_notify(title: str, body: str) -> int:
+    """Show a critical notification to every desktop session. Returns how many
+    sessions we delivered to. Never raises; never blocks the agent."""
+    import shutil
+    exe = shutil.which("notify-send")
+    if not exe:
+        return 0
+    delivered = 0
+    for uid, gid, home, bus in _desktop_sessions():
+        try:
+            r = subprocess.run(
+                [exe, "--app-name=Sentinel", "--urgency=critical",
+                 "--expire-time=15000", "--icon=dialog-warning", "--", title, body],
+                user=uid, group=gid, extra_groups=[],
+                env={"DBUS_SESSION_BUS_ADDRESS": f"unix:path={bus}",
+                     "XDG_RUNTIME_DIR": os.path.dirname(bus), "HOME": home,
+                     "PATH": "/usr/bin:/bin"},
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, timeout=3, check=False)
+            if r.returncode == 0:
+                delivered += 1
+        except (OSError, subprocess.SubprocessError, ValueError):
+            continue
+    return delivered
+
+
+def report_kill(pid: int, entry, rule, killed: int, children: int) -> None:
+    """Record a real kill and tell the person at the keyboard."""
+    global _notify_last
+    cmd = redact_cmdline(entry.cmdline)
+    _log_kill({
+        "ts": time.time(), "pid": pid, "binary": entry.binary_path,
+        "cmdline": cmd[:400], "lineage": f"{entry.lineage_id:#x}",
+        "rule_id": rule.id, "rule": rule.name,
+        "killed": killed, "children": children,
+    })
+    if not NOTIFY_ENABLED:
+        return
+    with _notify_lock:
+        now = time.monotonic()
+        if now - _notify_last < _NOTIFY_MIN_GAP:
+            return
+        _notify_last = now
+    title = "Sentinel stopped a process"
+    body = _notify_escape(f"{rule.name} (rule {rule.id})\n{os.path.basename(entry.binary_path) or entry.comm}"
+                          f" · PID {pid}\n{cmd[:120]}")
+    threading.Thread(target=_desktop_notify, args=(title, body), daemon=True).start()
+
 # Eviction config
 LINEAGE_TREE_MAX = int(os.environ.get("SENTINEL_LINEAGE_MAX", "100000"))
 LINEAGE_BY_ID_MAX = int(os.environ.get("SENTINEL_LINEAGE_BY_ID_MAX", "200000"))
@@ -1055,7 +1141,7 @@ def handle_exec_event(event_dict: dict):
                 alert["action"] = "LOG"
                 alert["tags"] = list(set((alert.get("tags") or []) + ["learn-mode"]))
                 entry.alerts[-1]["action"] = "LOG"
-                print(f"[-] LEARN MODE (no enforcement): {rule.name} -> PID {pid}")
+                print(f"[-] WOULD KILL (learn mode): {rule.name} (ID:{rule.id}) -> PID {pid}")
             elif (entry.flags & LF_TRUSTED) and not (rule.flags & RF_CMDLINE):
                 # Trusted binary: exempt from identity (binary-name) rules only.
                 # Command-line behaviour rules still enforce, because attackers
@@ -1230,11 +1316,11 @@ def handle_alert_event(event_dict: dict):
 def kill_process(pid: int, entry: LineageEntry, rule: Rule):
     """Kill process and all children in lineage"""
     try:
-        # Kill the process
-        _kill_if_same_process(pid, entry)
+        killed_pids = []
+        if _kill_if_same_process(pid, entry):
+            killed_pids.append(pid)
 
         # Kill all children in lineage tree
-        killed_pids = [pid]
         for child_pid in entry.children:
             child_entry = lineage_tree.get(child_pid)
             if child_entry is None:
@@ -1248,11 +1334,23 @@ def kill_process(pid: int, entry: LineageEntry, rule: Rule):
         # Block entire lineage
         block_lineage(entry.lineage_id, rule)
 
-        with stats_lock:
-            stats["killed"] += 1 + len(killed_pids) - 1
+        cmd = redact_cmdline(entry.cmdline)[:160]
+        if DRY_RUN:
+            print(f"[dry-run] WOULD KILL lineage {entry.lineage_id:#x}: PID {pid} "
+                  f"| rule {rule.id} '{rule.name}' | {cmd}")
+            return
+        if not killed_pids:
+            print(f"[-] NOT KILLED lineage {entry.lineage_id:#x}: PID {pid} already gone or protected "
+                  f"| rule {rule.id} '{rule.name}' | {cmd}")
+            return
 
-        print(f"[!] KILLED lineage {entry.lineage_id:#x}: PID {pid} + {len(killed_pids)-1} children "
-              f"| rule {rule.id} '{rule.name}' | {redact_cmdline(entry.cmdline)[:160]}")
+        with stats_lock:
+            stats["killed"] += len(killed_pids)
+
+        children = len(killed_pids) - (1 if pid in killed_pids else 0)
+        print(f"[!] KILLED lineage {entry.lineage_id:#x}: PID {pid} + {children} children "
+              f"| rule {rule.id} '{rule.name}' | {cmd}")
+        report_kill(pid, entry, rule, len(killed_pids), children)
 
     except Exception as e:
         print(f"[-] Kill failed: {e}")

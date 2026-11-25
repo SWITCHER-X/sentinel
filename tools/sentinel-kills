@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+"""Show what Sentinel has killed.
+
+  sentinel-kills            last 20 kills
+  sentinel-kills -n 100     last 100
+  sentinel-kills -f         follow new kills live
+  sentinel-kills --json     raw JSON lines
+"""
+import argparse, json, os, sys, time
+
+LOG = os.environ.get("SENTINEL_KILL_LOG", "/var/lib/sentinel/kills.log")
+
+
+def fmt(rec: dict) -> str:
+    when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(rec.get("ts", 0)))
+    return (f"{when}  PID {rec.get('pid', '?'):<7} rule {rec.get('rule_id', '?')} "
+            f"{rec.get('rule', '?')}\n    {rec.get('cmdline', '')}\n"
+            f"    binary {rec.get('binary', '?')}  lineage {rec.get('lineage', '?')}  "
+            f"killed {rec.get('killed', 0)} ({rec.get('children', 0)} children)")
+
+
+def emit(line: str, raw: bool) -> None:
+    line = line.strip()
+    if not line:
+        return
+    if raw:
+        print(line)
+        return
+    try:
+        print(fmt(json.loads(line)))
+    except ValueError:
+        print(line)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("-n", type=int, default=20, help="how many recent kills to show")
+    ap.add_argument("-f", "--follow", action="store_true", help="keep running and print new kills")
+    ap.add_argument("--json", action="store_true", help="print raw JSON lines")
+    ap.add_argument("--file", default=LOG, help=f"kill log (default {LOG})")
+    a = ap.parse_args()
+    try:
+        with open(a.file, encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except FileNotFoundError:
+        print(f"No kills recorded yet ({a.file} does not exist).")
+        lines = []
+    except PermissionError:
+        print(f"Cannot read {a.file}: run with sudo.", file=sys.stderr)
+        return 1
+    for line in lines[-a.n:]:
+        emit(line, a.json)
+    if a.follow:
+        try:
+            with open(a.file, encoding="utf-8") as fh:
+                fh.seek(0, os.SEEK_END)
+                while True:
+                    line = fh.readline()
+                    if line:
+                        emit(line, a.json)
+                    else:
+                        time.sleep(0.5)
+        except (KeyboardInterrupt, FileNotFoundError):
+            pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

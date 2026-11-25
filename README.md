@@ -56,8 +56,13 @@ flowchart LR
 ```bash
 git clone https://github.com/SWITCHER-X/sentinel.git
 cd sentinel
-sudo ./install.sh
+sudo ./install.sh        # asks 7 questions, each with a default
 ```
+
+Non-interactive: `sudo ./install.sh --yes` (safe defaults: learn mode,
+localhost). Dry run: `--plan` asks and prints the plan without changing
+anything. Flags skip questions: `--learn`/`--enforce`, `--notify`/`--no-notify`,
+`--lan`, `--port N`, `--retention DAYS`, `--hub-only`.
 
 > [!IMPORTANT]
 > The installer prints the dashboard URL and generates the **admin password once**
@@ -244,6 +249,25 @@ learn mode**. The original mode is restored.
 </details>
 
 <details>
+<summary><b>See what was killed</b></summary>
+
+Every real kill is reported three ways:
+
+- agent log: `[!] KILLED lineage 0x…: PID n + k children | rule 1002 'Reverse Shell' | <cmdline>`
+  (learn mode prints `WOULD KILL`, an exited pid prints `NOT KILLED`)
+- desktop: critical pop-up with rule, binary, pid and command, rate-limited
+- history:
+
+```bash
+sudo sentinel-kills            # last 20
+sudo sentinel-kills -n 100     # more
+sudo sentinel-kills -f         # follow live
+sudo sentinel-kills --json     # raw
+cat /var/lib/sentinel/kills.log
+```
+</details>
+
+<details>
 <summary><b>Update in place</b></summary>
 
 `Ctrl` `K` → *Install updates from git*. The updater fetches, builds into a
@@ -319,6 +343,8 @@ SHA256:5wCBDa/K3kXd1qsYl6CT/YXcmw6jorMjwOgOOZUO5YU
 | `SENTINEL_TRUST_PROXY` | `1` behind a reverse proxy (real client IP) |
 | `SENTINEL_RETENTION_DAYS` | event retention (default 30, `0` = keep forever) |
 | `SENTINEL_PROTECTED_TREES` | comma-separated package-manager binaries whose trees are never killed |
+| `SENTINEL_NOTIFY` | `1` = desktop pop-up when a process is stopped (set by the installer) |
+| `SENTINEL_KILL_LOG` | kill log path (default `/var/lib/sentinel/kills.log`) |
 </details>
 
 ## API

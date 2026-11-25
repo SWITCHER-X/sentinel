@@ -69,6 +69,7 @@ long-lived processes.
 | **Mode** | header pill / palette | learn (log only) ⇄ enforce (kill) |
 | **Diagnostics** | empty state, palette | why is the pipeline not delivering |
 | **Update** | palette | staged build, health gate, zero-downtime swap |
+| **Kill history** | `sudo sentinel-kills` | readable log of every real kill (`-f`, `-n`, `--json`) |
 
 Every admin action lands in the audit table with operator and time.
 

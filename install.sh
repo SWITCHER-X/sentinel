@@ -2,9 +2,18 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Project SENTINEL — Linux Installer
 #
-#   sudo ./install.sh                        hub + agent (fresh install)
+#   sudo ./install.sh                        interactive setup (asks a few questions)
+#   sudo ./install.sh --yes                  no questions: safe defaults (learn mode)
+#   sudo ./install.sh --plan                 ask, show the plan, change nothing
 #   sudo ./install.sh --hub-only             hub only (no eBPF agent)
 #   sudo ./install.sh --reset-credentials    rotate the dashboard password
+#
+# Options (skip the matching question):
+#   --learn | --enforce     learn = log only, never kill (default); enforce = kill
+#   --notify | --no-notify  desktop pop-up when Sentinel stops a process
+#   --port N                dashboard port (default 5000)
+#   --lan                   listen on all interfaces (default: this machine only)
+#   --retention DAYS        keep events this long (default 30, 0 = forever)
 #
 # Re-running an install keeps existing credentials and state. The script shows
 # numbered progress steps and is idempotent: it reuses the virtualenv, only
@@ -60,7 +69,7 @@ spinner_stop() {
 trap 'spinner_stop' EXIT
 
 usage() {
-  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
   exit 0
 }
 
@@ -68,21 +77,180 @@ usage() {
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HUB_ONLY=0
 RESET_CREDS=0
-for arg in "$@"; do
+ASSUME_YES=0
+PLAN_ONLY=0
+# Wizard answers. Empty = "not decided yet": ask when interactive, else default.
+W_MODE=""        # learn | enforce
+W_NOTIFY=""      # 1 | 0
+W_PORT=""
+W_BIND=""        # 127.0.0.1 | 0.0.0.0
+W_RETENTION=""
+W_PASSWORD=""    # empty = auto-generate
+ARGV=("$@")
+i=0
+while [[ $i -lt ${#ARGV[@]} ]]; do
+  arg="${ARGV[$i]}"
   case "$arg" in
     --hub-only) HUB_ONLY=1 ;;
     --reset-credentials) RESET_CREDS=1 ;;
+    -y|--yes) ASSUME_YES=1 ;;
+    --plan) PLAN_ONLY=1 ;;
+    --learn) W_MODE=learn ;;
+    --enforce) W_MODE=enforce ;;
+    --notify) W_NOTIFY=1 ;;
+    --no-notify) W_NOTIFY=0 ;;
+    --lan) W_BIND=0.0.0.0 ;;
+    --port|--retention)
+      i=$((i + 1))
+      [[ $i -lt ${#ARGV[@]} ]] || die "$arg needs a value"
+      [[ "${ARGV[$i]}" =~ ^[0-9]+$ ]] || die "$arg needs a number (got: ${ARGV[$i]})"
+      if [[ "$arg" == "--port" ]]; then W_PORT="${ARGV[$i]}"; else W_RETENTION="${ARGV[$i]}"; fi ;;
     -h|--help) usage ;;
-    *) die "unknown option: $arg (valid: --hub-only, --reset-credentials, --help)" ;;
+    *) die "unknown option: $arg (see --help)" ;;
   esac
+  i=$((i + 1))
 done
+if [[ -n "$W_PORT" ]] && (( W_PORT < 1 || W_PORT > 65535 )); then die "--port must be 1-65535"; fi
 
-[[ $EUID -eq 0 ]] || die "run as root: sudo ./install.sh"
+[[ $EUID -eq 0 || $PLAN_ONLY -eq 1 ]] || die "run as root: sudo ./install.sh"
 
 OPT=/opt/sentinel
 VARLIB=/var/lib/sentinel
 ETC=/etc/sentinel
 PORT="${SENTINEL_PORT:-5000}"
+
+# ─── Interactive setup ───
+# Questions only appear on a real terminal and only for things not already given
+# as flags. --yes (or no TTY, e.g. CI) takes the defaults without asking.
+INTERACTIVE=0
+if [[ -t 0 && -t 1 && $ASSUME_YES -eq 0 ]]; then INTERACTIVE=1; fi
+
+env_get() { grep -m1 "^$1=" "$ETC/sentinel.env" 2>/dev/null | cut -d= -f2- || true; }
+# A re-run starts from what is already configured, so defaults never undo it.
+_old_port=$(env_get SENTINEL_PORT);       [[ "$_old_port" =~ ^[0-9]+$ && -z "${SENTINEL_PORT:-}" ]] && PORT="$_old_port"
+_old_dry=$(env_get SENTINEL_DRY_RUN)
+_old_bind=$(env_get SENTINEL_BIND)
+_old_ret=$(env_get SENTINEL_RETENTION_DAYS)
+_old_notify=$(env_get SENTINEL_NOTIFY)
+# Remember what was given explicitly (flags or answers): only those are written
+# over an existing installation. Everything else keeps its current value.
+
+ask_choice() {  # var "question" default_index "label1" "label2" ...
+  local var=$1 q=$2 def=$3; shift 3
+  local opts=("$@") n=${#opts[@]} ans idx
+  printf '\n  %s\n' "$q"
+  for idx in "${!opts[@]}"; do
+    printf '    %d) %s%s\n' "$((idx + 1))" "${opts[$idx]}" "$([[ $((idx + 1)) -eq $def ]] && printf '  [default]')"
+  done
+  while :; do
+    read -r -p "  > " ans || ans=""
+    ans="${ans:-$def}"
+    if [[ "$ans" =~ ^[0-9]+$ ]] && (( ans >= 1 && ans <= n )); then
+      printf -v "$var" '%s' "$ans"; return 0
+    fi
+    printf '    please enter a number from 1 to %d\n' "$n"
+  done
+}
+
+ask_number() {  # var "question" default min max
+  local var=$1 q=$2 def=$3 min=$4 max=$5 ans
+  while :; do
+    read -r -p "  $q [$def]: " ans || ans=""
+    ans="${ans:-$def}"
+    if [[ "$ans" =~ ^[0-9]+$ ]] && (( ans >= min && ans <= max )); then
+      printf -v "$var" '%s' "$ans"; return 0
+    fi
+    printf '    enter a number from %d to %d\n' "$min" "$max"
+  done
+}
+
+ask_password() {  # sets W_PASSWORD (empty = generate)
+  local p1 p2
+  while :; do
+    read -r -s -p "  password (min 12 chars, letters/digits/._@%+=:,-): " p1 || p1=""; echo
+    if [[ ! "$p1" =~ ^[A-Za-z0-9._@%+=:,-]{12,}$ ]]; then
+      printf '    too short or has unsupported characters, try again\n'; continue
+    fi
+    read -r -s -p "  repeat it: " p2 || p2=""; echo
+    [[ "$p1" == "$p2" ]] && { W_PASSWORD="$p1"; return 0; }
+    printf '    those did not match\n'
+  done
+}
+
+desktop_present() {  # true when someone is logged in with a session bus
+  compgen -G "/run/user/[1-9]*/bus" >/dev/null 2>&1
+}
+
+if [[ $INTERACTIVE -eq 1 ]]; then
+  printf '\n[*] Project SENTINEL setup  (press Enter to accept the [default])\n'
+  if [[ $HUB_ONLY -eq 0 ]]; then
+    ask_choice _c "What should be installed?" 1 \
+      "Hub + agent: dashboard and live protection (recommended)" \
+      "Hub only: dashboard, no eBPF agent"
+    [[ $_c -eq 2 ]] && HUB_ONLY=1
+  fi
+  if [[ $HUB_ONLY -eq 0 && -z "$W_MODE" ]]; then
+    _dm=1; [[ "$_old_dry" == "0" ]] && _dm=2
+    ask_choice _c "What should Sentinel do when a rule fires?" "$_dm" \
+      "Learn: only log and alert, never kill (start here for a week)" \
+      "Enforce: kill the process and block its lineage"
+    [[ $_c -eq 2 ]] && W_MODE=enforce || W_MODE=learn
+  fi
+  if [[ $HUB_ONLY -eq 0 && -z "$W_NOTIFY" ]]; then
+    _d=1; desktop_present || _d=2
+    [[ "$_old_notify" == "0" ]] && _d=2; [[ "$_old_notify" == "1" ]] && _d=1
+    ask_choice _c "Show a desktop pop-up whenever Sentinel stops a process?$([[ $_d -eq 1 ]] && printf ' (desktop detected)' || printf ' (no desktop session found)')" "$_d" \
+      "Yes" "No (kills are still logged: sentinel-kills)"
+    [[ $_c -eq 1 ]] && W_NOTIFY=1 || W_NOTIFY=0
+  fi
+  if [[ -z "$W_BIND" ]]; then
+    _db=1; [[ "$_old_bind" == "0.0.0.0" ]] && _db=2
+    ask_choice _c "Who may open the dashboard?" "$_db" \
+      "Only this machine (127.0.0.1)  [safest]" \
+      "Anyone on my network (0.0.0.0, plain HTTP: put TLS in front)"
+    [[ $_c -eq 2 ]] && W_BIND=0.0.0.0 || W_BIND=127.0.0.1
+  fi
+  if [[ -z "$W_PORT" ]]; then ask_number W_PORT "Dashboard port" "$PORT" 1 65535; fi
+  if [[ -z "$W_RETENTION" ]]; then ask_number W_RETENTION "Days to keep events (0 = forever)" "${_old_ret:-30}" 0 3650; fi
+  if [[ $RESET_CREDS -eq 1 || ! -f /etc/sentinel/sentinel.env ]]; then
+    ask_choice _c "Dashboard admin password?" 1 \
+      "Generate a strong one for me (shown once at the end)" \
+      "I will type my own"
+    [[ $_c -eq 2 ]] && ask_password
+  fi
+fi
+
+# What was decided explicitly (written over an existing install), then defaults
+# for everything else (written only when the setting does not exist yet).
+X_MODE=$([[ -n "$W_MODE" ]] && echo 1 || echo 0)
+X_NOTIFY=$([[ -n "$W_NOTIFY" ]] && echo 1 || echo 0)
+X_BIND=$([[ -n "$W_BIND" ]] && echo 1 || echo 0)
+X_PORT=$([[ -n "$W_PORT" ]] && echo 1 || echo 0)
+X_RET=$([[ -n "$W_RETENTION" ]] && echo 1 || echo 0)
+if [[ -z "$W_MODE" ]]; then
+  if [[ "$_old_dry" == "0" ]]; then W_MODE=enforce; else W_MODE=learn; fi
+fi
+if [[ -z "$W_NOTIFY" ]]; then
+  if [[ -n "$_old_notify" ]]; then W_NOTIFY="$_old_notify"
+  elif desktop_present; then W_NOTIFY=1; else W_NOTIFY=0; fi
+fi
+[[ -n "$W_BIND" ]] || W_BIND="${_old_bind:-127.0.0.1}"
+[[ -n "$W_PORT" ]] && PORT="$W_PORT"
+[[ -n "$W_RETENTION" ]] || W_RETENTION="${_old_ret:-30}"
+
+if [[ $INTERACTIVE -eq 1 || $PLAN_ONLY -eq 1 ]]; then
+  printf '\n  ── Plan ─────────────────────────────────────────\n'
+  printf '   install     : %s\n' "$([[ $HUB_ONLY -eq 1 ]] && echo 'hub only' || echo 'hub + eBPF agent')"
+  [[ $HUB_ONLY -eq 0 ]] && printf '   mode        : %s\n' "$([[ $W_MODE == enforce ]] && echo 'ENFORCE (kills processes)' || echo 'learn (log only, never kills)')"
+  [[ $HUB_ONLY -eq 0 ]] && printf '   pop-ups     : %s\n' "$([[ $W_NOTIFY -eq 1 ]] && echo yes || echo no)"
+  printf '   dashboard   : %s:%s\n' "$W_BIND" "$PORT"
+  printf '   keep events : %s\n' "$([[ $W_RETENTION -eq 0 ]] && echo forever || echo "$W_RETENTION days")"
+  printf '   admin pass  : %s\n' "$([[ -n $W_PASSWORD ]] && echo 'the one you typed' || echo 'generated')"
+  printf '  ─────────────────────────────────────────────────\n'
+  if [[ $PLAN_ONLY -eq 1 ]]; then printf '  --plan: nothing was changed.\n'; exit 0; fi
+  read -r -p "  Continue? [Y/n] " _go || _go=n
+  [[ "${_go:-y}" =~ ^[Yy] ]] || { printf '  cancelled, nothing was changed.\n'; exit 0; }
+fi
 
 printf '[*] Project SENTINEL installer\n'
 printf '    source : %s\n' "$SRC_DIR"
@@ -253,6 +421,16 @@ if [[ $HUB_ONLY -eq 0 ]]; then
     echo "       Or install the hub only: sudo ./install.sh --hub-only" >&2
     exit 1
   fi
+fi
+
+if [[ $HUB_ONLY -eq 0 && $W_NOTIFY -eq 1 ]] && ! command -v notify-send >/dev/null 2>&1; then
+  case "$PKG" in
+    apt-get) NOTIFY_PKG=libnotify-bin ;;
+    zypper)  NOTIFY_PKG=libnotify-tools ;;
+    *)       NOTIFY_PKG=libnotify ;;
+  esac
+  note "installing $NOTIFY_PKG for desktop pop-ups"
+  pkg_install "$NOTIFY_PKG" || note "WARN: could not install $NOTIFY_PKG: pop-ups disabled, kills are still logged"
 fi
 
 # ─── [2/8] Service user + directories ───
@@ -432,12 +610,35 @@ if [[ -f "$SIGNING_PUB" ]] && command -v ssh-keygen >/dev/null 2>&1; then
   note "release signing key installed (allowed_signers)"
 fi
 
+# Choices from the setup questions / flags. Written every run so a re-install
+# with new answers takes effect; untouched when the wizard did not run.
+put() {  # key value explicit(1|0): explicit answers win; otherwise only fill gaps
+  if [[ "$3" == 1 ]]; then set_secret "$1" "$2"; else add_secret "$1" "$2"; fi
+}
+put "SENTINEL_PORT" "$PORT" "$X_PORT"
+put "SENTINEL_BIND" "$W_BIND" "$X_BIND"
+[[ "$X_PORT" == 1 ]] && set_secret "SENTINEL_COLLECTOR_URL" "http://127.0.0.1:$PORT/api/v1/telemetry"
+put "SENTINEL_RETENTION_DAYS" "$W_RETENTION" "$X_RET"
+if [[ $HUB_ONLY -eq 0 ]]; then
+  put "SENTINEL_DRY_RUN" "$([[ $W_MODE == enforce ]] && echo 0 || echo 1)" "$X_MODE"
+  put "SENTINEL_NOTIFY" "$W_NOTIFY" "$X_NOTIFY"
+  add_secret "SENTINEL_KILL_LOG" "$VARLIB/kills.log"
+fi
+if [[ -n "$W_PASSWORD" ]]; then
+  ADMIN_PW=""
+  set_secret "SENTINEL_ADMIN_PASSWORD" "$W_PASSWORD"
+fi
+
 # Never leave a placeholder behind: the hub refuses to boot on one.
 if grep -q '=CHANGE_ME' "$GEN_CAT"; then
   die "$GEN_CAT still contains CHANGE_ME placeholders — edit it and re-run"
 fi
 chmod 600 "$GEN_CAT"
 chown root:sentinel "$GEN_CAT" 2>/dev/null || chown root:root "$GEN_CAT"
+if [[ $HUB_ONLY -eq 0 ]]; then
+  ln -sf "$OPT/tools/sentinel-kills" /usr/local/bin/sentinel-kills 2>/dev/null || true
+  touch "$VARLIB/kills.log" && chown sentinel:sentinel "$VARLIB/kills.log" && chmod 640 "$VARLIB/kills.log"
+fi
 step_ok "config in $ETC"
 
 # ─── [7/8] systemd services ───
@@ -668,7 +869,16 @@ printf '              (set SENTINEL_BIND=0.0.0.0 in %s to expose it; put TLS in 
 printf '  Config    : %s\n' "$GEN_CAT"
 printf '  State     : %s\n' "$VARLIB"
 printf '  Logs      : journalctl -u sentinel-hub -f\n'
-if [[ $HUB_ONLY -eq 0 ]]; then printf '  Agent log : journalctl -u sentinel-agent -f\n'; fi
+if [[ $HUB_ONLY -eq 0 ]]; then
+  printf '  Agent log : journalctl -u sentinel-agent -f\n'
+  printf '  Kills     : sudo sentinel-kills   (-f to follow live)\n'
+  if [[ $W_MODE == learn ]]; then
+    printf '  Mode      : LEARN (log only). When the alerts look right, switch on enforcement:\n'
+    printf '              sudo sed -i "s/^SENTINEL_DRY_RUN=.*/SENTINEL_DRY_RUN=0/" %s && sudo systemctl restart sentinel-agent\n' "$GEN_CAT"
+  else
+    printf '  Mode      : ENFORCE (kills matching processes)\n'
+  fi
+fi
 if [[ $SYSTEMD -eq 1 ]]; then
   printf '  Boot      : hub %s, agent %s (auto-start on reboot)\n' \
     "$(systemctl is-enabled sentinel-hub 2>/dev/null || echo unknown)" \
