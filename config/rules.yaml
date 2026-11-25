@@ -52,7 +52,7 @@ rules:
   flags: 3
 - id: 1005
   name: Reverse Shell - perl/python/ruby one-liners
-  pattern: (perl|python|ruby|php|nc|ncat|socat).*reverse.*shell|shell.*reverse
+  pattern: '(?:perl|python[0-9.]*|ruby|php)\b.*(?:-e|-c|-r)\s+.*?(?:/bin/(?:sh|bash)|pty\.spawn|fsockopen|socket,subprocess)|(?:^|[\s/])(?:nc|ncat|socat)\s+(?:.*\s)?-e(?:\s|$)'
   action: KILL
   severity: CRITICAL
   mitre:
@@ -326,7 +326,7 @@ rules:
   flags: 4
 - id: 5001
   name: Log Tampering - history/wtmp/utmp
-  pattern: (history|last|lastb|utmpdump|wtmp|btmp).*(-c|-d|--clear|>\s*/dev/null)
+  pattern: '(?:^|[\s;&|])history\s+-c(?:\s|$)|(?:>|>>)\s*/var/log/(?:wtmp|btmp|utmp)|(?:rm|shred|truncate)\s+.*(?:wtmp|btmp|utmp|\.bash_history)|lastb?\s+--(?:clear|delete)'
   action: KILL
   severity: CRITICAL
   mitre:
@@ -593,7 +593,7 @@ rules:
 - id: 11002
   name: Disk Wiping
   binary_pattern: (dd|shred|wipe|scrub|badblocks|mkfs|fdisk|parted|sfdisk)
-  pattern: (of=|if=).*\/(sd|hd|vd|nvme|mmcblk|loop|dm-|md|zram)
+  pattern: 'of=\s*/dev/(?:sd|hd|vd|nvme|mmcblk|loop|dm-|md|zram)|>\s*/dev/(?:sd|hd|vd|nvme|mmcblk|loop|dm-|md|zram)|mkfs(?:\.\w+)?\s+/dev/(?:sd|hd|vd|nvme|mmcblk|loop|dm-|md|zram)'
   action: KILL
   severity: CRITICAL
   mitre:

