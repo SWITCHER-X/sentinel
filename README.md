@@ -338,7 +338,7 @@ SHA256:5wCBDa/K3kXd1qsYl6CT/YXcmw6jorMjwOgOOZUO5YU
 | `SENTINEL_AGENT_KEY` | shared agent key |
 | `SENTINEL_SESSION_SECRET` | session/CSRF signing key |
 | `SENTINEL_ALLOWLIST_KEY` | signed allowlist key |
-| `SENTINEL_ADMIN_USER` / `SENTINEL_ADMIN_PASSWORD` | dashboard credentials |
+| `SENTINEL_ADMIN_USER` / `SENTINEL_ADMIN_PASSWORD` | dashboard credentials — the password seeds the SQLite hash; the plaintext is scrubbed after install |
 | `SENTINEL_UPDATE_REF` | git ref the updater tracks (pin to a tag) |
 | `SENTINEL_UPDATE_VERIFY` | `1` = require valid tag/commit signature |
 | `SENTINEL_TRUST_PROXY` | `1` behind a reverse proxy (real client IP) |
