@@ -615,6 +615,45 @@ def api_allowlist():
         return jsonify({"error": str(e)}), 400
 
 
+TELEMETRY_CMDLINE_MAX = 4096   # keep a full shell command line, not a whole file
+TELEMETRY_NODE_ID_MAX = 128
+
+
+def _coerce_telemetry_event(data: dict) -> dict:
+    """Normalise the fields the hub relies on. Raises ValueError → HTTP 400.
+
+    The agent is the only writer, but malformed input must never reach the
+    lineage/SQLite code paths and surface as a 500.
+    """
+    for field in ("pid", "ppid"):
+        if data.get(field) is None:
+            continue
+        try:
+            data[field] = int(data[field])
+        except (TypeError, ValueError):
+            raise ValueError(f"{field} must be an integer")
+
+    mitre = data.get("mitre")
+    if mitre is not None:
+        if not isinstance(mitre, list):
+            raise ValueError("mitre must be a list of strings")
+        data["mitre"] = [str(t) for t in mitre]
+
+    cmdline = data.get("cmdline")
+    if cmdline is not None:
+        if not isinstance(cmdline, str):
+            raise ValueError("cmdline must be a string")
+        data["cmdline"] = cmdline[:TELEMETRY_CMDLINE_MAX]
+
+    node_id = data.get("node_id")
+    if node_id is not None:
+        if not isinstance(node_id, str):
+            raise ValueError("node_id must be a string")
+        data["node_id"] = node_id[:TELEMETRY_NODE_ID_MAX]
+
+    return data
+
+
 @app.route("/api/v1/telemetry", methods=["GET", "POST"])
 def telemetry():
     if request.method == "POST":
@@ -627,7 +666,13 @@ def telemetry():
         if not _check_telemetry_rate_limit(agent_key):
             return jsonify({"error": "rate limited"}), 429
 
-        data = request.json or {}
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"error": "body must be a JSON object"}), 400
+        try:
+            data = _coerce_telemetry_event(data)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
         data["received_at"] = time.time()
 
         # Geo-blocking check
