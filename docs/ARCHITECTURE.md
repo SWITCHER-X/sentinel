@@ -100,7 +100,7 @@ Properties:
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/api/v1/telemetry` | GET/POST | Telemetry ingestion + query |
-| `/api/v1/stats` | GET | Aggregated stats + lineage metrics |
+| `/api/v1/stats` | GET | Aggregated stats + lineage metrics (session or `X-Sentinel-Key`) |
 | `/api/v1/lineage` | GET | All lineage trees |
 | `/api/v1/lineage/<id>` | GET | Specific lineage tree |
 | `/api/v1/lineage/<id>/block` | POST | Block entire lineage |
