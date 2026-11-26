@@ -400,6 +400,9 @@ operations: [docs/OPERATIONS.md](docs/OPERATIONS.md) · security: [docs/SECURITY
 > staged updates, a calm console — exist so alpha is not another word for sharp
 > edges everywhere.
 
+Want to pilot SENTINEL in a company? Pilot and commercial terms are available on
+request — see [LICENSE](LICENSE) for the contact line.
+
 ## License
 
 See [LICENSE](LICENSE).
