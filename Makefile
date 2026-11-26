@@ -87,6 +87,7 @@ test:
 	python3 tests/test_agent_fixes.py
 	python3 tests/test_package_manager_fixes.py
 	python3 tests/test_kill_reporting.py
+	python3 tests/test_stats_auth.py
 	python3 tests/test_telemetry_validation.py
 	python3 tests/test_install_wizard.py
 

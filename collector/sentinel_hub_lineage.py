@@ -101,9 +101,8 @@ _admin_user = os.getenv("SENTINEL_ADMIN_USER", "admin")
 _admin_pw = os.getenv("SENTINEL_ADMIN_PASSWORD")
 sa.ensure_user(_admin_user, _admin_pw)
 
-PUBLIC_PATHS = ("/login", "/health", "/favicon.ico")   # /metrics needs auth, see _metrics_ok
+PUBLIC_PATHS = ("/login", "/health", "/favicon.ico")   # /metrics and /api/v1/stats need auth, see _metrics_ok
 ADMIN_WRITE_PREFIXES = ("/api/v1/rules", "/api/v1/geo", "/api/v1/lineage/")
-OPEN_API = ("/api/v1/stats",)  # monitoring endpoints stay open (read-only counters)
 
 
 def _is_agent(req):
@@ -443,11 +442,9 @@ def _auth_gate():
         if not (sa.session_verify(tok) and sa.csrf_verify(tok, request.headers.get("X-CSRF-Token", ""))):
             return jsonify({"error": "forbidden"}), 403
         return None
-    if p == "/metrics":
+    if p in ("/metrics", "/api/v1/stats"):
         return None if _metrics_ok(request) else (jsonify({"error": "unauthorized"}), 401)
     if p in PUBLIC_PATHS or p.startswith(("/login", "/api/v1/login")):
-        return None
-    if any(p.startswith(o) for o in OPEN_API):
         return None
     if p == "/" or p.startswith("/api/v1/"):
         if _session_ok(request) or _is_agent(request):

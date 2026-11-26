@@ -223,7 +223,9 @@ show_results() {
         
         echo ""
         echo "=== STATS ==="
-        curl -s http://localhost:5000/api/v1/stats | python3 -m json.tool
+        # /api/v1/stats requires the agent key now; read it from the installed env file.
+        KEY=$(sed -n 's/^SENTINEL_AGENT_KEY=//p' /etc/sentinel/sentinel.env 2>/dev/null | head -1)
+        curl -s -H "X-Sentinel-Key: ${KEY}" http://localhost:5000/api/v1/stats | python3 -m json.tool
         
         echo ""
         echo "=== LINEAGE TREES ==="
