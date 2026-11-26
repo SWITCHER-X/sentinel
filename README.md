@@ -6,8 +6,8 @@
 Every process, connection and sensitive file access — traced back through its lineage, and killable as a tree.
 
 [![Release](https://img.shields.io/github/v/release/SWITCHER-X/sentinel?include_prereleases&style=flat-square&label=release&color=2ea043)](https://github.com/SWITCHER-X/sentinel/releases)
-[![Tests](https://img.shields.io/badge/tests-119%20passing-2ea043?style=flat-square)](#development)
-[![Platform](https://img.shields.io/badge/platform-linux%20x86__64%20%7C%20arm64-1f6feb?style=flat-square)](#requirements)
+[![CI](https://github.com/SWITCHER-X/sentinel/actions/workflows/kernel-test.yml/badge.svg?branch=master)](https://github.com/SWITCHER-X/sentinel/actions/workflows/kernel-test.yml?query=branch%3Amaster)
+[![Platform](https://img.shields.io/badge/platform-linux%20x86__64-1f6feb?style=flat-square)](#requirements)
 [![Status](https://img.shields.io/badge/status-alpha-d29922?style=flat-square)](#status)
 [![License](https://img.shields.io/badge/license-source--available-6e7781?style=flat-square)](LICENSE)
 
@@ -79,6 +79,7 @@ xdg-open http://127.0.0.1:5000     # log in as admin
 
 | Requirement | Why |
 | :--- | :--- |
+| x86_64 host (**arm64: planned**) | the shipped `ebpf/vmlinux.h` is an x86_64 BTF dump and the build passes `-D__TARGET_ARCH_x86`; arm64 needs a re-dump plus `__TARGET_ARCH_arm64` guards |
 | Linux 5.4+ with BTF (`/sys/kernel/btf/vmlinux`) | CO-RE object loading |
 | tracefs (`/sys/kernel/tracing` or debugfs fallback) | tracepoint attachment |
 | BPF LSM in the active LSM list | enforcement hooks (`task_kill`, `file_open`) |
@@ -337,7 +338,7 @@ SHA256:5wCBDa/K3kXd1qsYl6CT/YXcmw6jorMjwOgOOZUO5YU
 | `SENTINEL_AGENT_KEY` | shared agent key |
 | `SENTINEL_SESSION_SECRET` | session/CSRF signing key |
 | `SENTINEL_ALLOWLIST_KEY` | signed allowlist key |
-| `SENTINEL_ADMIN_USER` / `SENTINEL_ADMIN_PASSWORD` | dashboard credentials |
+| `SENTINEL_ADMIN_USER` / `SENTINEL_ADMIN_PASSWORD` | dashboard credentials — the password seeds the SQLite hash; the plaintext is scrubbed after install |
 | `SENTINEL_UPDATE_REF` | git ref the updater tracks (pin to a tag) |
 | `SENTINEL_UPDATE_VERIFY` | `1` = require valid tag/commit signature |
 | `SENTINEL_TRUST_PROXY` | `1` behind a reverse proxy (real client IP) |
@@ -356,7 +357,7 @@ SHA256:5wCBDa/K3kXd1qsYl6CT/YXcmw6jorMjwOgOOZUO5YU
 | :--- | :--- | :--- |
 | POST | `/api/v1/login` | session cookie + CSRF |
 | POST | `/api/v1/logout` | revoke session |
-| GET | `/api/v1/stats` | aggregate counters |
+| GET | `/api/v1/stats` | aggregate counters (session or `X-Sentinel-Key`) |
 | GET | `/api/v1/lineage` | lineage trees |
 | GET | `/api/v1/telemetry` | recent events |
 | POST | `/api/v1/telemetry` | agent ingest (`X-Sentinel-Key`) |
@@ -381,7 +382,7 @@ on one distro is expected alpha behavior — better listed than discovered.
 ## Development
 
 ```bash
-python3 -m pytest tests -q          # 119 tests
+python3 -m pytest tests -q          # full suite
 python3 tools/validate_rules.py     # rules schema + regex safety
 node --check collector/dashboard.js # console module
 bash -n install.sh
@@ -398,6 +399,9 @@ operations: [docs/OPERATIONS.md](docs/OPERATIONS.md) · security: [docs/SECURITY
 > tag. The pieces that make it usable — learn mode, trust lists, diagnostics,
 > staged updates, a calm console — exist so alpha is not another word for sharp
 > edges everywhere.
+
+Want to pilot SENTINEL in a company? Pilot and commercial terms are available on
+request — see [LICENSE](LICENSE) for the contact line.
 
 ## License
 

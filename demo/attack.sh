@@ -17,6 +17,10 @@ ok()   { echo -e "${GREEN}[✓]${NC} $1"; }
 pause(){ echo -e "\n${YEL}———— press ENTER for the next stage ————${NC}"; read -r; }
 
 HUB="http://127.0.0.1:5000"
+# /api/v1/stats requires the agent key (session or X-Sentinel-Key). The demo runs
+# as root on the sensor box, so read it from the installed env file.
+HUB_KEY=$(sed -n 's/^SENTINEL_AGENT_KEY=//p' /etc/sentinel/sentinel.env 2>/dev/null | head -1)
+hub_curl() { if [ -n "$HUB_KEY" ]; then curl -s -H "X-Sentinel-Key: $HUB_KEY" "$@"; else curl -s "$@"; fi; }
 WORK=$(mktemp -d)
 trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$WORK"' EXIT
 
@@ -38,7 +42,7 @@ systemctl is-active --quiet sentinel-agent && ok "agent: RUNNING" || {
   echo -e "${RED}[✗] sentinel-agent is not running. Start it: sudo systemctl start sentinel-agent${NC}"; exit 1; }
 systemctl is-active --quiet sentinel-hub && ok "hub: RUNNING" || {
   echo -e "${RED}[✗] sentinel-hub is not running. Start it: sudo systemctl start sentinel-hub${NC}"; exit 1; }
-curl -sf "$HUB/api/v1/stats" >/dev/null && ok "API: reachable" || {
+hub_curl -f "$HUB/api/v1/stats" >/dev/null && ok "API: reachable" || {
   echo -e "${RED}[✗] API unreachable at $HUB${NC}"; exit 1; }
 ok "All green. Dashboard should be on screen: $HUB"
 pause
@@ -109,6 +113,6 @@ say  "  2. Click a lineage → process tree + events + techniques"
 say  "  3. BLOCK a lineage → SIGKILL; re-run an attack → dead at exec"
 say  "  4. Mini metrics — event rate, kills over time"
 echo ""
-curl -s "$HUB/api/v1/stats" | python3 -m json.tool | head -12
+hub_curl "$HUB/api/v1/stats" | python3 -m json.tool | head -12
 echo ""
 ok   "Stats above are LIVE from the kernel — nothing pre-recorded."

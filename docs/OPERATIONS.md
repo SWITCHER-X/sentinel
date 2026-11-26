@@ -131,8 +131,9 @@ sqlite3 /var/lib/sentinel/sentinel.db ".backup /backup/sentinel.db"   # safe liv
 sudo tar -C /etc -czf /backup/sentinel-etc.tgz sentinel/
 ```
 
-That is the whole state: **env file** (keys + password) and **the DB** (users,
-audit, lineages).
+That is the whole state: **env file** (keys; the admin password only until the
+first verified install) and **the DB** (users — the admin password lives here as
+a scrypt hash — audit, lineages).
 
 ## Metrics to watch
 

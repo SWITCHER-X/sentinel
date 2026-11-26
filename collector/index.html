@@ -6,15 +6,7 @@
 <meta name="color-scheme" content="dark light">
 <title>SENTINEL — Lineage EDR</title>
 <script src="/d3.v7.min.js"></script>
-<script>
-  (function() {
-    try {
-      var t = localStorage.getItem('sentinel-theme');
-      if (!t) t = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-      document.documentElement.setAttribute('data-theme', t);
-    } catch (e) {}
-  })();
-</script>
+<script src="/theme.js"></script>
 <style>
 /* ─── Tokens ─────────────────────────────────────────────────────────────── */
 :root {
@@ -708,9 +700,6 @@ kbd {
   <div class="inspector-body" id="detail-content" data-detail-content></div>
 </div>
 
-<script type="module">
-import { SentinelDashboard } from './dashboard.js';
-new SentinelDashboard().mount();
-</script>
+<script type="module" src="/main.js"></script>
 </body>
 </html>

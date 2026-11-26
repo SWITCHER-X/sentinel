@@ -88,7 +88,6 @@ REQUIRED_SECRETS = [
     "SENTINEL_AGENT_KEY",
     "SENTINEL_SESSION_SECRET",
     "SENTINEL_ALLOWLIST_KEY",
-    "SENTINEL_ADMIN_PASSWORD",
 ]
 for _sec in REQUIRED_SECRETS:
     if not os.getenv(_sec):
@@ -99,11 +98,19 @@ for _sec in REQUIRED_SECRETS:
 AGENT_KEY = os.getenv("SENTINEL_AGENT_KEY")
 _admin_user = os.getenv("SENTINEL_ADMIN_USER", "admin")
 _admin_pw = os.getenv("SENTINEL_ADMIN_PASSWORD")
-sa.ensure_user(_admin_user, _admin_pw)
+# The plaintext admin password is only needed to seed the user. Once the
+# installer has scrubbed it, the scrypt hash in SQLite is authoritative; without
+# a password AND without an existing user we still refuse to boot.
+if _admin_pw and _admin_pw.startswith("CHANGE_ME"):
+    raise RuntimeError("Secret SENTINEL_ADMIN_PASSWORD still has default CHANGE_ME value — please configure it")
+if _admin_pw:
+    sa.ensure_user(_admin_user, _admin_pw)
+elif not sa.user_exists(_admin_user):
+    raise RuntimeError(
+        "Missing required secret: SENTINEL_ADMIN_PASSWORD (and no dashboard user exists yet)")
 
-PUBLIC_PATHS = ("/login", "/health", "/favicon.ico")   # /metrics needs auth, see _metrics_ok
+PUBLIC_PATHS = ("/login", "/health", "/favicon.ico")   # /metrics and /api/v1/stats need auth, see _metrics_ok
 ADMIN_WRITE_PREFIXES = ("/api/v1/rules", "/api/v1/geo", "/api/v1/lineage/")
-OPEN_API = ("/api/v1/stats",)  # monitoring endpoints stay open (read-only counters)
 
 
 def _is_agent(req):
@@ -416,6 +423,9 @@ DASHBOARD_STATIC = {
     "login.html",
     "index.html",
     "d3.v7.min.js",
+    "theme.js",
+    "main.js",
+    "login.js",
 }
 
 @functools.lru_cache(maxsize=32)
@@ -443,11 +453,9 @@ def _auth_gate():
         if not (sa.session_verify(tok) and sa.csrf_verify(tok, request.headers.get("X-CSRF-Token", ""))):
             return jsonify({"error": "forbidden"}), 403
         return None
-    if p == "/metrics":
+    if p in ("/metrics", "/api/v1/stats"):
         return None if _metrics_ok(request) else (jsonify({"error": "unauthorized"}), 401)
     if p in PUBLIC_PATHS or p.startswith(("/login", "/api/v1/login")):
-        return None
-    if any(p.startswith(o) for o in OPEN_API):
         return None
     if p == "/" or p.startswith("/api/v1/"):
         if _session_ok(request) or _is_agent(request):
@@ -517,12 +525,30 @@ def api_logout():
     return resp
 
 
+# Every script lives in a same-origin file (theme.js, main.js, login.js,
+# dashboard.js, d3.v7.min.js), so script-src 'self' needs no 'unsafe-inline'
+# or 'unsafe-eval'. Inline style attributes remain (style-src 'unsafe-inline').
+CSP_POLICY = (
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; "
+    "base-uri 'none'; form-action 'self'"
+)
+
+
 @app.after_request
 def _session_and_security_headers(resp):
-    """Sliding expiry + baseline headers. Never touches the login/logout replies."""
+    """Sliding expiry + baseline security headers.
+
+    Headers apply to every response: they are harmless on JSON and the HTML
+    pages are the ones that need them. The sliding-cookie logic still skips
+    the login/logout replies (their cookie flags are set by the handler).
+    """
+    resp.headers.setdefault("Content-Security-Policy", CSP_POLICY)
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")
     if request.path.startswith("/api/"):
         resp.headers.setdefault("Cache-Control", "no-store")
-        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     if request.path in ("/api/v1/login", "/api/v1/logout"):
         return resp
     token = request.cookies.get(SESSION_COOKIE, "")
@@ -615,6 +641,45 @@ def api_allowlist():
         return jsonify({"error": str(e)}), 400
 
 
+TELEMETRY_CMDLINE_MAX = 4096   # keep a full shell command line, not a whole file
+TELEMETRY_NODE_ID_MAX = 128
+
+
+def _coerce_telemetry_event(data: dict) -> dict:
+    """Normalise the fields the hub relies on. Raises ValueError → HTTP 400.
+
+    The agent is the only writer, but malformed input must never reach the
+    lineage/SQLite code paths and surface as a 500.
+    """
+    for field in ("pid", "ppid"):
+        if data.get(field) is None:
+            continue
+        try:
+            data[field] = int(data[field])
+        except (TypeError, ValueError):
+            raise ValueError(f"{field} must be an integer")
+
+    mitre = data.get("mitre")
+    if mitre is not None:
+        if not isinstance(mitre, list):
+            raise ValueError("mitre must be a list of strings")
+        data["mitre"] = [str(t) for t in mitre]
+
+    cmdline = data.get("cmdline")
+    if cmdline is not None:
+        if not isinstance(cmdline, str):
+            raise ValueError("cmdline must be a string")
+        data["cmdline"] = cmdline[:TELEMETRY_CMDLINE_MAX]
+
+    node_id = data.get("node_id")
+    if node_id is not None:
+        if not isinstance(node_id, str):
+            raise ValueError("node_id must be a string")
+        data["node_id"] = node_id[:TELEMETRY_NODE_ID_MAX]
+
+    return data
+
+
 @app.route("/api/v1/telemetry", methods=["GET", "POST"])
 def telemetry():
     if request.method == "POST":
@@ -627,7 +692,13 @@ def telemetry():
         if not _check_telemetry_rate_limit(agent_key):
             return jsonify({"error": "rate limited"}), 429
 
-        data = request.json or {}
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"error": "body must be a JSON object"}), 400
+        try:
+            data = _coerce_telemetry_event(data)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
         data["received_at"] = time.time()
 
         # Geo-blocking check

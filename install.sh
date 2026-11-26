@@ -546,6 +546,20 @@ gen_password() {
   openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n'
 }
 
+admin_db_user() {  # username — true when the SQLite users table already has it
+  "$OPT/.venv/bin/python" - "$VARLIB/sentinel.db" "$1" <<'PY'
+import os, sqlite3, sys
+row = None
+if os.path.exists(sys.argv[1]):
+    try:
+        row = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True).execute(
+            "SELECT 1 FROM users WHERE username=?", (sys.argv[2],)).fetchone()
+    except sqlite3.Error:
+        row = None
+raise SystemExit(0 if row else 1)
+PY
+}
+
 add_secret() {  # key value — set when missing OR still a CHANGE_ME placeholder
   local key=$1 val=$2 cur=""
   cur=$(grep -m1 "^${key}=" "$GEN_CAT" 2>/dev/null | cut -d= -f2- || true)
@@ -555,9 +569,15 @@ add_secret() {  # key value — set when missing OR still a CHANGE_ME placeholde
 }
 
 ADMIN_PW=""
+ADMIN_USER_EXISTING=$(grep -m1 '^SENTINEL_ADMIN_USER=' "$GEN_CAT" 2>/dev/null | cut -d= -f2- || true)
+ADMIN_USER_EXISTING=${ADMIN_USER_EXISTING:-admin}
 if [[ $EXISTING_INSTALL -eq 1 && $RESET_CREDS -eq 0 ]]; then
   CUR_PW=$(grep -m1 '^SENTINEL_ADMIN_PASSWORD=' "$GEN_CAT" 2>/dev/null | cut -d= -f2- || true)
-  if [[ -z "$CUR_PW" || "$CUR_PW" == CHANGE_ME* || ${#CUR_PW} -lt 12 ]]; then
+  if [[ -z "$CUR_PW" ]] && admin_db_user "$ADMIN_USER_EXISTING"; then
+    # A previous run scrubbed the plaintext after hashing it into SQLite. The
+    # DB hash is authoritative — never rotate the password implicitly.
+    note "dashboard password already set — plaintext no longer in the env file"
+  elif [[ -z "$CUR_PW" || "$CUR_PW" == CHANGE_ME* || ${#CUR_PW} -lt 12 ]]; then
     # Older installs copied the placeholder, or a legacy password is below the
     # 12-char floor — either way the hub would refuse to boot, so regenerate.
     ADMIN_PW=$(gen_password)
@@ -751,7 +771,8 @@ step "Syncing credentials and verifying the installation"
 ADMIN_PW_SYNCED=$(grep "^SENTINEL_ADMIN_PASSWORD=" "$GEN_CAT" | head -1 | cut -d= -f2-)
 ADMIN_USER_SYNCED=$(grep "^SENTINEL_ADMIN_USER=" "$GEN_CAT" | head -1 | cut -d= -f2-)
 AGENT_KEY_SYNCED=$(grep "^SENTINEL_AGENT_KEY=" "$GEN_CAT" | head -1 | cut -d= -f2-)
-"$OPT/.venv/bin/python" - <<PYEOF
+if [[ -n "$ADMIN_PW_SYNCED" ]]; then
+  "$OPT/.venv/bin/python" - <<PYEOF
 import sys
 sys.path.insert(0, "$OPT/collector")
 import os
@@ -759,6 +780,11 @@ os.environ.setdefault("SENTINEL_DB_PATH", "$VARLIB/sentinel.db")
 import sentinel_auth as sa
 sa.ensure_user("$ADMIN_USER_SYNCED", """$ADMIN_PW_SYNCED""", reset=True)
 PYEOF
+elif admin_db_user "$ADMIN_USER_SYNCED"; then
+  note "admin password stays as a SQLite hash only (env value already scrubbed)"
+else
+  die "no dashboard credential: SENTINEL_ADMIN_PASSWORD is unset and '$ADMIN_USER_SYNCED' has no DB user"
+fi
 
 # This heredoc ran as root: give the DB (and any -wal/-shm) back to the service user.
 chown -R sentinel:sentinel "$VARLIB"
@@ -779,7 +805,12 @@ no_placeholders() { ! grep -q '=CHANGE_ME' "$1"; }
 admin_pw_ok() {
   local pw
   pw=$(grep -m1 '^SENTINEL_ADMIN_PASSWORD=' "$GEN_CAT" 2>/dev/null | cut -d= -f2- || true)
-  [[ -n "$pw" && "$pw" != CHANGE_ME* && ${#pw} -ge 12 ]]
+  if [[ -z "$pw" ]]; then
+    # Plaintext scrubbed after the first verified install: the DB hash is the credential.
+    admin_db_user "$ADMIN_USER_SYNCED"
+    return
+  fi
+  [[ "$pw" != CHANGE_ME* && ${#pw} -ge 12 ]]
 }
 env_perms()       { [[ "$(stat -c %a "$1" 2>/dev/null)" == "600" ]]; }
 py_import()       { "$OPT/.venv/bin/python" -c "import $1"; }
@@ -793,6 +824,12 @@ state_owned()     { [[ "$(stat -c %U "$VARLIB" 2>/dev/null)" == "sentinel" ]] &&
                     { [[ ! -e "$VARLIB/sentinel.db" ]] || [[ "$(stat -c %U "$VARLIB/sentinel.db")" == "sentinel" ]]; }; }
 rules_ok()        { "$OPT/.venv/bin/python" "$OPT/tools/validate_rules.py" "$ETC/rules.yaml" 2>&1 | grep -q "All rules passed"; }
 login_ok() {
+  if [[ -z "$ADMIN_PW_SYNCED" ]]; then
+    # Plaintext is gone; the installer already hashed this password and a
+    # previous run verified it. Check the DB credential instead of a login.
+    admin_db_user "$ADMIN_USER_SYNCED"
+    return
+  fi
   PORT="$PORT" CHECK_PW="$ADMIN_PW_SYNCED" CHECK_USER="$ADMIN_USER_SYNCED" "$OPT/.venv/bin/python" - <<'PYLOGIN'
 import json, os, urllib.request
 req = urllib.request.Request(
@@ -816,7 +853,7 @@ fi
 
 printf '       -- verification --\n'
 run_chk  "secrets have no CHANGE_ME placeholders" no_placeholders "$GEN_CAT"
-run_chk  "admin password auto-generated (>=12 chars)" admin_pw_ok
+run_chk  "dashboard credential present (env password or DB hash)" admin_pw_ok
 run_chk  "secret file permissions are 600" env_perms "$GEN_CAT"
 run_chk  "state dir and auth DB owned by sentinel" state_owned
 run_warn "dashboard self-update wired" update_ready
@@ -827,12 +864,12 @@ run_chk  "rules file validates" rules_ok
 if [[ $SYSTEMD -eq 1 ]]; then
   run_chk  "hub /health is healthy" health_ok
   run_chk  "dashboard login page reachable" page_ok
-  run_chk  "admin login with the env password" login_ok
+  run_chk  "admin login verified (or DB credential present)" login_ok
 else
   # No service manager: the operator starts the hub by hand, so don't fail the install.
   run_warn "hub /health is healthy (start it manually)" health_ok
   run_warn "dashboard login page reachable (start it manually)" page_ok
-  run_warn "admin login with the env password (start it manually)" login_ok
+  run_warn "admin login verified (start it manually)" login_ok
 fi
 run_chk  "sentinel-hub enabled at boot" hub_enabled
 if [[ $HUB_ONLY -eq 0 ]]; then
@@ -894,9 +931,19 @@ if [[ -n "$ADMIN_PW" ]]; then
   printf '│    pass: %-45s│\n' "$ADMIN_PW"
   printf '└──────────────────────────────────────────────────────┘\n'
 else
-  printf '\n  Dashboard password: %s\n' "$GEN_CAT (SENTINEL_ADMIN_PASSWORD)"
+  printf '\n  Dashboard password: set (scrypt hash in the state DB, not in %s)\n' "$GEN_CAT"
+  printf '  Rotate it with   : sudo %s/install.sh --reset-credentials\n' "$OPT"
 fi
 printf '─────────────────────────────────────────────────────────────\n'
+
+# The hub owns the scrypt hash in SQLite; the plaintext is only needed until it
+# has been applied, verified and printed once. Scrub it on a clean run so the
+# env file stops revealing the password and the hub starts from the DB hash.
+if [[ -n "$ADMIN_PW_SYNCED" && ${CHECKS_FAIL:-0} -eq 0 ]]; then
+  set_secret "SENTINEL_ADMIN_PASSWORD" ""
+  chmod 600 "$GEN_CAT"
+  note "plaintext admin password removed from $GEN_CAT (hash stays in SQLite)"
+fi
 
 if [[ ${CHECKS_FAIL:-0} -gt 0 ]]; then
   printf '\n  !! %s verification check(s) failed — see the output above.\n' "$CHECKS_FAIL"

@@ -237,6 +237,17 @@ def ensure_user(username: str, password: str, reset: bool = False):
     c.close()
 
 
+def user_exists(username: str) -> bool:
+    """True when the users table already has this account.
+
+    The hub uses this to keep the plaintext admin password optional after the
+    first install: the scrypt hash in SQLite is authoritative."""
+    if not username:
+        return False
+    return db().execute("SELECT 1 FROM users WHERE username=?",
+                        (username,)).fetchone() is not None
+
+
 def check_user(username: str, password: str) -> bool:
     """Constant-work lookup: unknown users still pay one scrypt verification.
 

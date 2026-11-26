@@ -42,7 +42,7 @@ flowchart TB
 | Asset | Where | Sensitivity |
 | :--- | :--- | :--- |
 | Agent key | `/etc/sentinel/sentinel.env` | submit telemetry; cannot change policy |
-| Admin password | env file (plaintext) + scrypt hash in SQLite | full console access |
+| Admin password | scrypt hash in SQLite; plaintext scrubbed from the env file after the first verified install | full console access |
 | Session/CSRF secret | env file | forge sessions if leaked |
 | Allowlist signing key | env file | sign trusted-binary lists |
 | Telemetry / lineage DB | `/var/lib/sentinel/sentinel.db` | process trees, commands, hosts |
@@ -51,7 +51,7 @@ flowchart TB
 > [!TIP]
 > Protect the env file (`root:sentinel`, `600`) and the state dir
 > (`sentinel:sentinel`, `750`). Back both up — losing the env file loses the
-> password (the DB hash still works) and the keys.
+> keys and secrets (the admin password survives as a SQLite hash).
 
 ## Trust boundaries in detail
 
@@ -141,6 +141,21 @@ SHA256:5wCBDa/K3kXd1qsYl6CT/YXcmw6jorMjwOgOOZUO5YU
 
 Safety rails: PID 1 and the agent are never killed; a missing recorded start time
 means no kill (PID-reuse guard); learn mode downgrades every action to logging.
+
+## Known limits
+
+Alpha trade-offs, accepted on purpose and scheduled to change:
+
+| Limit | What it means | Mitigation / status |
+| :--- | :--- | :--- |
+| One shared `X-Sentinel-Key` for all agents | any holder can inject events and spoof `node_id` | rotate the key; per-agent keys are planned |
+| Plain HTTP between agent and hub | the key and command lines are readable on the wire unless you add TLS | terminate TLS in front of the hub (see above) or keep it on localhost |
+| Release signing key is an alpha key from the maintainer's build host | a compromised build host can sign a release the updater trusts | verify the fingerprint out of band; rotate to an offline key before GA |
+| Single-node design | no cross-host correlation | multi-host needs per-agent keys; planned |
+
+> [!NOTE]
+> These are known design limits, not hidden bugs. Rotating the agent key and
+> terminating TLS covers most of the exposure until per-agent keys land.
 
 ## Reporting
 
