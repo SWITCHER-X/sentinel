@@ -3,6 +3,8 @@
 Run: python3 tests/test_auth_db.py"""
 import json
 import os
+import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -10,7 +12,8 @@ import unittest
 import urllib.request
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "collector"))
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO / "collector"))
 os.environ.setdefault("SENTINEL_DB_PATH", tempfile.mktemp(suffix=".db"))
 # sentinel_auth fails closed without these; tests supply their own.
 os.environ.setdefault("SENTINEL_SESSION_SECRET", "test-session-secret")
@@ -146,6 +149,45 @@ class TestUsersAndAudit(unittest.TestCase):
         rows = sa.db().execute(
             "SELECT actor, action FROM audit WHERE action='test.action'").fetchall()
         self.assertTrue(any(r["actor"] == "tester" for r in rows))
+
+
+class TestAdminPasswordGate(unittest.TestCase):
+    """Task 6: the plaintext admin password is optional once the DB user exists."""
+
+    def _boot_hub(self, db_path, password):
+        """Import the hub in a fresh process so boot-time fail-closed logic runs."""
+        env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "SENTINEL_DB_PATH": db_path,
+            "SENTINEL_AGENT_KEY": "test-agent-key",
+            "SENTINEL_SESSION_SECRET": "test-session-secret",
+            "SENTINEL_ALLOWLIST_KEY": "test-allowlist-key",
+            "PYTHONPATH": str(REPO / "collector"),
+        }
+        if password is not None:
+            env["SENTINEL_ADMIN_PASSWORD"] = password
+        return subprocess.run(
+            [sys.executable, "-c", "import sentinel_hub_lineage"],
+            env=env, cwd=str(REPO), capture_output=True, text=True, timeout=120,
+        )
+
+    def test_restart_without_plaintext_starts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "sentinel.db")
+            first = self._boot_hub(db, "long-enough-admin-pw")
+            self.assertEqual(first.returncode, 0, first.stderr)
+            with sqlite3.connect(db) as c:
+                self.assertIsNotNone(
+                    c.execute("SELECT 1 FROM users WHERE username='admin'").fetchone())
+            again = self._boot_hub(db, None)
+            self.assertEqual(again.returncode, 0, again.stderr)
+
+    def test_fresh_db_without_plaintext_refuses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "sentinel.db")
+            r = self._boot_hub(db, None)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("SENTINEL_ADMIN_PASSWORD", r.stderr)
 
 
 class TestAllowlist(unittest.TestCase):

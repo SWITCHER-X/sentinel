@@ -42,7 +42,7 @@ flowchart TB
 | Asset | Where | Sensitivity |
 | :--- | :--- | :--- |
 | Agent key | `/etc/sentinel/sentinel.env` | submit telemetry; cannot change policy |
-| Admin password | env file (plaintext) + scrypt hash in SQLite | full console access |
+| Admin password | scrypt hash in SQLite; plaintext scrubbed from the env file after the first verified install | full console access |
 | Session/CSRF secret | env file | forge sessions if leaked |
 | Allowlist signing key | env file | sign trusted-binary lists |
 | Telemetry / lineage DB | `/var/lib/sentinel/sentinel.db` | process trees, commands, hosts |
@@ -51,7 +51,7 @@ flowchart TB
 > [!TIP]
 > Protect the env file (`root:sentinel`, `600`) and the state dir
 > (`sentinel:sentinel`, `750`). Back both up — losing the env file loses the
-> password (the DB hash still works) and the keys.
+> keys and secrets (the admin password survives as a SQLite hash).
 
 ## Trust boundaries in detail
 

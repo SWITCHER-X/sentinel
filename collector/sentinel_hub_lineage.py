@@ -88,7 +88,6 @@ REQUIRED_SECRETS = [
     "SENTINEL_AGENT_KEY",
     "SENTINEL_SESSION_SECRET",
     "SENTINEL_ALLOWLIST_KEY",
-    "SENTINEL_ADMIN_PASSWORD",
 ]
 for _sec in REQUIRED_SECRETS:
     if not os.getenv(_sec):
@@ -99,7 +98,16 @@ for _sec in REQUIRED_SECRETS:
 AGENT_KEY = os.getenv("SENTINEL_AGENT_KEY")
 _admin_user = os.getenv("SENTINEL_ADMIN_USER", "admin")
 _admin_pw = os.getenv("SENTINEL_ADMIN_PASSWORD")
-sa.ensure_user(_admin_user, _admin_pw)
+# The plaintext admin password is only needed to seed the user. Once the
+# installer has scrubbed it, the scrypt hash in SQLite is authoritative; without
+# a password AND without an existing user we still refuse to boot.
+if _admin_pw and _admin_pw.startswith("CHANGE_ME"):
+    raise RuntimeError("Secret SENTINEL_ADMIN_PASSWORD still has default CHANGE_ME value — please configure it")
+if _admin_pw:
+    sa.ensure_user(_admin_user, _admin_pw)
+elif not sa.user_exists(_admin_user):
+    raise RuntimeError(
+        "Missing required secret: SENTINEL_ADMIN_PASSWORD (and no dashboard user exists yet)")
 
 PUBLIC_PATHS = ("/login", "/health", "/favicon.ico")   # /metrics and /api/v1/stats need auth, see _metrics_ok
 ADMIN_WRITE_PREFIXES = ("/api/v1/rules", "/api/v1/geo", "/api/v1/lineage/")
