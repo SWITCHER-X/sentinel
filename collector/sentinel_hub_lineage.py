@@ -415,6 +415,9 @@ DASHBOARD_STATIC = {
     "login.html",
     "index.html",
     "d3.v7.min.js",
+    "theme.js",
+    "main.js",
+    "login.js",
 }
 
 @functools.lru_cache(maxsize=32)
@@ -514,12 +517,30 @@ def api_logout():
     return resp
 
 
+# Every script lives in a same-origin file (theme.js, main.js, login.js,
+# dashboard.js, d3.v7.min.js), so script-src 'self' needs no 'unsafe-inline'
+# or 'unsafe-eval'. Inline style attributes remain (style-src 'unsafe-inline').
+CSP_POLICY = (
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; "
+    "base-uri 'none'; form-action 'self'"
+)
+
+
 @app.after_request
 def _session_and_security_headers(resp):
-    """Sliding expiry + baseline headers. Never touches the login/logout replies."""
+    """Sliding expiry + baseline security headers.
+
+    Headers apply to every response: they are harmless on JSON and the HTML
+    pages are the ones that need them. The sliding-cookie logic still skips
+    the login/logout replies (their cookie flags are set by the handler).
+    """
+    resp.headers.setdefault("Content-Security-Policy", CSP_POLICY)
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")
     if request.path.startswith("/api/"):
         resp.headers.setdefault("Cache-Control", "no-store")
-        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     if request.path in ("/api/v1/login", "/api/v1/logout"):
         return resp
     token = request.cookies.get(SESSION_COOKIE, "")

@@ -5,15 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="color-scheme" content="dark light">
 <title>SENTINEL — Sign in</title>
-<script>
-  (function() {
-    try {
-      var t = localStorage.getItem('sentinel-theme');
-      if (!t) t = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-      document.documentElement.setAttribute('data-theme', t);
-    } catch (e) {}
-  })();
-</script>
+<script src="/theme.js"></script>
 <style>
 :root {
   --ground: #101112; --surface: #151719; --sunken: #0b0c0d;
@@ -90,31 +82,6 @@ button:disabled { opacity: 0.55; cursor: progress; }
   </form>
   <div class="hint">Credentials are set at install time in <code>/etc/sentinel/sentinel.env</code>.</div>
 </div>
-<script>
-document.getElementById('f').addEventListener('submit', async (ev) => {
-  ev.preventDefault();
-  const e = document.getElementById('e');
-  const btn = document.getElementById('submit');
-  e.textContent = '';
-  btn.disabled = true;
-  try {
-    const r = await fetch('/api/v1/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: document.getElementById('u').value,
-        password: document.getElementById('p').value
-      })
-    });
-    if (r.ok) { location.href = '/'; return; }
-    const j = await r.json().catch(() => ({}));
-    e.textContent = j.error || ('Sign-in failed (' + r.status + '). Try again.');
-  } catch (err) {
-    e.textContent = 'Cannot reach the hub. Check that sentinel-hub is running.';
-  } finally {
-    btn.disabled = false;
-  }
-});
-</script>
+<script src="/login.js"></script>
 </body>
 </html>
